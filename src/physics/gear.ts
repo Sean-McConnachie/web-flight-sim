@@ -63,6 +63,13 @@
  * ellipse then limits the two together, so a wheel that is already braking at
  * the limit has no grip left to steer with.
  *
+ * A slip curve alone cannot hold a PARKED aircraft. Slip is a speed, so at zero
+ * speed the curve returns zero force whatever the brake does, and the aircraft
+ * then creeps forward under thrust until the slip catches up with it. A real
+ * tire does not creep. It sticks, and the carcass twists instead. STICK_SLIP_LENGTH
+ * below models that twist, and it is what lets the pilot run the engines up
+ * against the brakes.
+ *
  *
  * 3. THE BRAKES
  *
@@ -111,8 +118,17 @@ import { Vector3 } from 'three';
 import { clamp, smoothstep } from '@/math/tables';
 import { DEG, G0 } from '@/math/units';
 import type { RigidBodyState, Wrench } from '@/physics/rigidbody';
-import type { ContactSample } from '@/physics/contact';
-import { addContactWrench, createContactSample, sampleContact } from '@/physics/contact';
+import { clearWrench, createWrench } from '@/physics/rigidbody';
+import type { AirframeContact, ContactPointDef, ContactSample } from '@/physics/contact';
+import {
+  MAX_GROUND_LOAD_FACTOR,
+  addContactWrench,
+  createAirframeContact,
+  createContactSample,
+  limitContactWrench,
+  reversalLimitMu,
+  sampleContact,
+} from '@/physics/contact';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -160,6 +176,11 @@ export interface GearLegState {
   slipAngle: number;
   /** Speed of the tread at the contact patch, m/s. It is omega * radius. */
   wheelSpeed: number;
+  /**
+   * Elastic twist of the tire of a HELD wheel, m. See STICK_SLIP_LENGTH. It is
+   * zero whenever the tire rolls or slides.
+   */
+  stickOffset: number;
   burst: boolean;
   /** Brake pack temperature, K. */
   brakeTemp: number;
@@ -309,8 +330,47 @@ const SLIP_ANGLE_REFERENCE_SPEED = 3; // m/s
 /** Rolling resistance of a tire on concrete. Source: Roskam, part V. */
 const ROLLING_RESISTANCE = 0.02;
 
-/** Speed over which the rolling resistance reaches its full value, m/s. */
-const ROLL_BLEND_SPEED = 0.3; // m/s
+/**
+ * Speed below which the tire of a HELD wheel twists instead of sliding, m/s.
+ *
+ * Above this speed the wheel rolls or slides and the slip curve owns the force.
+ * Below it the tread of a braked wheel stays where the ground put it. The value
+ * is far below any speed a pilot taxis at, so nothing above it changes.
+ */
+const STICK_SPEED = 0.3; // m/s
+
+/**
+ * Twist of the tire carcass that reaches full grip, m.
+ *
+ * A tire that grips without sliding carries its load through the shear of the
+ * tread and the carcass. The deflection at the limit of grip is about one
+ * percent of the rolling radius on a tire of this size, which is the value
+ * below. It sets the stiffness of the hold: the two main tires together give
+ * 0.8 * 57.6 kN / 0.01 m, which is 4.6 MN/m, so the two engines at full power
+ * move the parked aircraft 3.8 mm and no further.
+ * Source: Pacejka, "Tire and Vehicle Dynamics", the brush model and the
+ * longitudinal slip stiffness. Confidence: estimate.
+ */
+const STICK_SLIP_LENGTH = 0.01; // m
+
+/** Damping of the stick, as a fraction of critical damping at that stiffness. */
+const STICK_DAMPING_RATIO = 0.7;
+
+/**
+ * Damping of the stick as a friction coefficient per unit speed, s / m.
+ *
+ * The stick is a spring of `LONG_PEAK_MU * load / STICK_SLIP_LENGTH` against the
+ * `load / G0` kilograms the leg holds up, so its critical damping is
+ * `2 sqrt(k m)`, and the load cancels out of the coefficient. Without the
+ * damper the spring is undamped, and a fixed step that holds the ground force
+ * over the whole step feeds energy into an undamped spring.
+ *
+ * The value comes out at 4.0 s/m. At the design weight the two main legs then
+ * damp at 230 kN per m/s, and the criterion recorded under
+ * SLIP_REFERENCE_SPEED, `c * dt * (1/m + r^2/I) < 1`, gives 0.21 at 240 Hz.
+ */
+const STICK_DAMPING =
+  2 * STICK_DAMPING_RATIO * Math.sqrt(LONG_PEAK_MU / (STICK_SLIP_LENGTH * G0));
 
 /**
  * Creep band of the brake, m/s.
@@ -640,6 +700,7 @@ function createLegState(): GearLegState {
     slipRatio: 0,
     slipAngle: 0,
     wheelSpeed: 0,
+    stickOffset: 0,
     burst: false,
     brakeTemp: AMBIENT_TEMPERATURE,
   };
@@ -648,11 +709,21 @@ function createLegState(): GearLegState {
 class Gear implements LandingGear {
   readonly legs: GearLegState[];
   private readonly defs: readonly GearLegDef[];
+  private readonly maxForce: number;
   private grounded = false;
 
   constructor(defs: readonly GearLegDef[]) {
     this.defs = defs;
     this.legs = defs.map(() => createLegState());
+    // The gas force of each leg at the design stroke IS the load that leg
+    // carries at rest, because gasPreload inverts exactly that relation. The
+    // sum is therefore the design weight, and the gear needs no other file to
+    // tell it what the aircraft weighs.
+    let weight = 0;
+    for (const def of defs) {
+      weight += strutForce(def, STATIC_STROKE_FRACTION * def.maxTravel);
+    }
+    this.maxForce = MAX_GROUND_LOAD_FACTOR * weight;
   }
 
   get anyOnGround(): boolean {
@@ -668,6 +739,7 @@ class Gear implements LandingGear {
       leg.slipRatio = 0;
       leg.slipAngle = 0;
       leg.wheelSpeed = 0;
+      leg.stickOffset = 0;
       leg.burst = false;
       leg.brakeTemp = AMBIENT_TEMPERATURE;
     }
@@ -686,16 +758,25 @@ class Gear implements LandingGear {
     const down = clamp(gearPosition, 0, 1);
     const steer = clamp(steering, -1, 1);
     this.grounded = false;
+    // The legs collect into a wrench of their own, so that the cap below acts on
+    // what the GEAR made and not on what the caller already holds.
+    clearWrench(gearWrench);
     for (let i = 0; i < this.defs.length; i++) {
       const def = this.defs[i];
       // The left main reads brakeLeft and the right main reads brakeRight. The
       // nose leg has no brake at all.
       const command = def.braked ? clamp(def.position.y < 0 ? brakeLeft : brakeRight, 0, 1) : 0;
-      this.updateLeg(def, this.legs[i], state, down, steer, command, dt, out);
+      this.updateLeg(def, this.legs[i], state, down, steer, command, dt, gearWrench);
       if (this.legs[i].onGround) {
         this.grounded = true;
       }
     }
+    // The hard stop at the end of the travel is structure, not a spring, and it
+    // is stiff enough to break the step on its own. See MAX_GROUND_LOAD_FACTOR
+    // of src/physics/contact.ts for why the cap sits where it sits.
+    limitContactWrench(gearWrench, this.maxForce);
+    out.force.add(gearWrench.force);
+    out.moment.add(gearWrench.moment);
   }
 
   private updateLeg(
@@ -723,6 +804,7 @@ class Gear implements LandingGear {
       leg.slipRatio = 0;
       leg.slipAngle = 0;
       leg.wheelSpeed = 0;
+      leg.stickOffset = 0;
       updateBrakeTemperature(leg, 0, 0, dt);
       return;
     }
@@ -743,6 +825,7 @@ class Gear implements LandingGear {
       leg.onGround = false;
       leg.slipRatio = 0;
       leg.slipAngle = 0;
+      leg.stickOffset = 0;
       // A free wheel keeps turning. The brake can still stop it in the air, so a
       // pilot who holds the brakes touches down on a locked wheel.
       let free = leg.wheelSpeed * Math.exp(-dt / WHEEL_SPIN_DOWN_TIME);
@@ -795,6 +878,7 @@ class Gear implements LandingGear {
     if (load <= 0) {
       leg.slipRatio = 0;
       leg.slipAngle = 0;
+      leg.stickOffset = 0;
       updateBrakeTemperature(leg, brakeTorque, leg.wheelSpeed / def.wheelRadius, dt);
       return;
     }
@@ -880,7 +964,44 @@ class Gear implements LandingGear {
         spin = Math.min(0, spin);
       }
       leg.wheelSpeed = spin;
-      tread = spin - forwardSpeed;
+
+      // --- The stick --------------------------------------------------------
+      //
+      // Everything above works on a slip, and a slip is a SPEED. At zero speed
+      // it is zero, so the tire above makes no force at all however hard the
+      // brake grips, and the aircraft creeps forward under thrust until the slip
+      // catches up. A real tire does not creep. The tread stays where the ground
+      // put it and the carcass twists, so the leg holds through an elastic
+      // OFFSET instead of through a slip.
+      //
+      // The brake is what makes the hold possible, because it is the brake that
+      // stops the wheel from turning the twist away. The hold is therefore the
+      // smaller of what the tire can pass and what the brake torque can react,
+      // and with no brake at all there is no hold and the wheel rolls free.
+      //
+      // The two Jumo 004 at full power make 17.6 kN. The main tires can pass
+      // 0.8 * 57.6 = 46 kN and the brakes can react 12000 / 0.42 = 28.6 kN per
+      // wheel, so both have room to spare and the aircraft stands still. That is
+      // the run up the pilot notes ask for.
+      const holdMu = Math.min(longPeak, brakeTorque / (def.wheelRadius * load));
+      const stickWeight =
+        holdMu > 0 ? 1 - smoothstep(0.5 * STICK_SPEED, STICK_SPEED, Math.abs(forwardSpeed)) : 0;
+      let muStick = 0;
+      if (stickWeight > 0) {
+        // A held wheel does not turn, so what is left of the wheel speed goes
+        // out with the same blend. The offset then collects the whole of the
+        // travel of the aircraft, which is what a twist is.
+        leg.wheelSpeed *= 1 - stickWeight;
+        leg.stickOffset += (forwardSpeed - leg.wheelSpeed) * dt;
+        const maxOffset = (STICK_SLIP_LENGTH * holdMu) / longPeak;
+        leg.stickOffset = clamp(leg.stickOffset, -maxOffset, maxOffset);
+        muStick =
+          -stickWeight *
+          ((longPeak * leg.stickOffset) / STICK_SLIP_LENGTH + STICK_DAMPING * forwardSpeed);
+      } else {
+        leg.stickOffset = 0;
+      }
+      tread = leg.wheelSpeed - forwardSpeed;
 
       const slipRatio = tread / slipReference;
       const slipAngle = Math.atan2(
@@ -890,7 +1011,7 @@ class Gear implements LandingGear {
       leg.slipRatio = slipRatio;
       leg.slipAngle = slipAngle;
 
-      let muLong = magicFormula(slipRatio, longPeak, LONG_SHAPE, LONG_STIFFNESS);
+      let muLong = magicFormula(slipRatio, longPeak, LONG_SHAPE, LONG_STIFFNESS) + muStick;
       // The friction opposes the lateral slide, so the sign turns over.
       let muLat = -magicFormula(slipAngle, latPeak, LAT_SHAPE, LAT_STIFFNESS);
 
@@ -904,14 +1025,24 @@ class Gear implements LandingGear {
 
       // Rolling resistance rides on top. It is not slip, it is the tread and the
       // carcass working themselves.
+      //
+      // It is COULOMB, so it holds its full value down to zero speed and it
+      // opposes the travel on both sides of it. A model that faded it out over a
+      // speed band instead could not hold a parked aircraft: the resistance is
+      // 0.02 * 62.7 kN = 1254 N and the two engines make 461 N at idle, so the
+      // aircraft must stand still, and a 0.3 m/s band let it roll at 0.12 m/s
+      // for ever. reversalLimitMu is the only thing that takes the value down,
+      // and it only does so where the force would drive the wheel BACKWARD
+      // inside one step.
       const rolling = leg.burst ? BURST_ROLLING_RESISTANCE : ROLLING_RESISTANCE;
-      muLong -= rolling * clamp(forwardSpeed / ROLL_BLEND_SPEED, -1, 1);
+      muLong -= Math.sign(forwardSpeed) * Math.min(rolling, reversalLimitMu(forwardSpeed, dt));
 
       worldForce.addScaledVector(wheelForward, muLong * load);
       worldForce.addScaledVector(wheelRight, muLat * load);
     } else {
       leg.slipRatio = 0;
       leg.slipAngle = 0;
+      leg.stickOffset = 0;
     }
 
     updateBrakeTemperature(leg, brakeTorque, leg.wheelSpeed / def.wheelRadius, dt);
@@ -1069,8 +1200,66 @@ export const ME262_STATIC_CG_HEIGHT = STATIC_CONTACT_DEPTH;
 /** Share of the weight the nose leg carries at rest. */
 export const ME262_NOSE_LOAD_FRACTION = NOSE_LOAD_FRACTION;
 
+// ---------------------------------------------------------------------------
+// The Me 262 airframe contact points
+// ---------------------------------------------------------------------------
+
+/**
+ * Turns a station and a height into a body axis position, exactly as
+ * bodyPosition of src/aircraft/me262/geometry.ts does. A station runs aft from
+ * the nose tip and a height runs up from the fuselage reference plane.
+ */
+function airframePoint(name: string, station: number, y: number, height: number): ContactPointDef {
+  return { name, position: new Vector3(CG_STATION - station, y, CG_HEIGHT - height) };
+}
+
+/**
+ * The seven points of the airframe that the ground can push on.
+ *
+ * Every number comes from the geometry the rest of the project already holds:
+ * FUSELAGE_SECTIONS of src/aircraft/me262/mass.ts for the fuselage underside,
+ * the plan form of src/aircraft/me262/geometry.ts for the wing tips, and the
+ * nacelle of the same file. CONVENTIONS section 4 keeps src/physics below
+ * src/aircraft, so the values appear here in the same DUPLICATED form the gear
+ * geometry above already uses.
+ *
+ *   name        station   y        height   depth below the CG
+ *   nose        0.00      0        +0.045   -0.18   the tip, and its underside
+ *   belly       5.10      0        -0.810   +0.68   the lowest fuselage section
+ *   nacelle     5.81      +-2.05   -0.955   +0.82   the bottom of the cowling
+ *   wing tip    6.94      +-6.255  +0.248   -0.38   the tip, dihedral included
+ *   tail        10.35     0        -0.050   -0.08   the aftmost low structure
+ *
+ * Read the last column against the 1.1967 m that the tire contact patch sits
+ * below the center of gravity. Every point stands clear when the aircraft parks.
+ * The nacelles are the lowest of the seven, 0.37 m above the runway with the
+ * gear down, so a gear up arrival lands on the two nacelles first. That is what
+ * the Me 262 really did, and it is why the type survived so many belly landings.
+ *
+ * The angles follow from the same table. The tail strikes at 16.7 degrees of
+ * pitch about the main axle and a wing tip strikes at 17.3 degrees of bank, both
+ * far outside anything the aircraft does on a normal takeoff or landing.
+ */
+export function me262ContactPoints(): ContactPointDef[] {
+  return [
+    airframePoint('nose', 0, 0, 0.045),
+    airframePoint('belly', 5.1, 0, -0.81),
+    airframePoint('nacelle left', 5.81, -2.05, -0.955),
+    airframePoint('nacelle right', 5.81, 2.05, -0.955),
+    airframePoint('wing tip left', 6.943, -6.255, 0.248),
+    airframePoint('wing tip right', 6.943, 6.255, 0.248),
+    airframePoint('tail', 10.35, 0, -0.05),
+  ];
+}
+
+/** Builds the airframe contact set of the Me 262 A-1a. */
+export function createMe262AirframeContact(): AirframeContact {
+  return createAirframeContact(me262ContactPoints(), DESIGN_WEIGHT);
+}
+
 // Scratch held in module scope. The step allocates nothing.
 const sample: ContactSample = createContactSample();
+const gearWrench: Wrench = createWrench();
 const contactBody = new Vector3();
 const strutAxis = new Vector3();
 const wheelForward = new Vector3();

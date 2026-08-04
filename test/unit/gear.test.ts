@@ -61,6 +61,8 @@ interface RunOptions {
   steering?: number;
   brakeLeft?: number;
   brakeRight?: number;
+  /** A steady force along body x, N. It stands for the thrust of the engines. */
+  thrust?: number;
   /** True holds the state still, so only the gear state moves. */
   frozen?: boolean;
 }
@@ -125,6 +127,7 @@ function run(options: RunOptions): RunResult {
     if (!options.frozen) {
       worldToBody(state.orientation, gravityWorld, gravityBody);
       wrench.force.add(gravityBody);
+      wrench.force.x += options.thrust ?? 0;
       acceleration.copy(wrench.force).applyQuaternion(state.orientation).multiplyScalar(1 / MASS);
       state.velocity.addScaledVector(acceleration, DT);
       state.position.addScaledVector(state.velocity, DT);
@@ -510,6 +513,78 @@ describe('ground steering', () => {
     expect(leftBrake.gear.legs[NOSE].slipRatio).toBeCloseTo(0, 2);
     // Both cases still slow the aircraft down.
     expect(leftBrake.wrench.force.x).toBeLessThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Standing still. Bead b54.
+// ---------------------------------------------------------------------------
+
+describe('the aircraft standing on the ground', () => {
+  /** Thrust of both Jumo 004 at full power, N. CONVENTIONS section 8, firm. */
+  const FULL_THRUST = 2 * 8800;
+  /** Thrust of both engines at idle, N. src/aircraft/me262/engine.ts reports 230. */
+  const IDLE_THRUST = 2 * 230;
+
+  it('holds the aircraft on the brakes against both engines at full power', () => {
+    // The pilot notes ask for a run up against the brakes. The numbers say the
+    // aircraft can do it. The two main tires can pass 0.8 * 57.6 = 46 kN and the
+    // brakes can react 12000 / 0.42 = 28.6 kN each, against 17.6 kN of thrust,
+    // so both have room to spare. A slip based tire alone could not hold it,
+    // because slip is a speed and at rest there is none.
+    const result = run({
+      height: ME262_STATIC_CG_HEIGHT + 0.001,
+      seconds: 10,
+      thrust: FULL_THRUST,
+      brakeLeft: 1,
+      brakeRight: 1,
+    });
+    // It NODS. The drag acts at the contact patch, 1.20 m below the center of
+    // gravity, so 17.6 kN of thrust makes 21 kN m of nose down moment, the nose
+    // leg takes twice its parked load and the center of gravity moves a few
+    // centimeters forward. That is what a real aircraft does on a run up. Then
+    // it stops: the speed at the end is a thousandth of the 0.06 m/s the model
+    // used to creep at for ever.
+    expect(result.state.position.x).toBeLessThan(0.05);
+    expect(Math.abs(result.state.velocity.x)).toBeLessThan(1e-3);
+  });
+
+  it('rolls away once the thrust beats what the brakes can hold', () => {
+    // The hold is not a freeze. Ask for more than the tires can pass and the
+    // aircraft slides, or the model would hold it against anything at all.
+    const result = run({
+      height: ME262_STATIC_CG_HEIGHT + 0.001,
+      seconds: 10,
+      thrust: 60000,
+      brakeLeft: 1,
+      brakeRight: 1,
+    });
+    expect(result.state.position.x).toBeGreaterThan(5);
+  });
+
+  it('does not roll at idle thrust with the brakes off', () => {
+    // Rolling resistance is 0.02 of the weight, which is 1254 N. The two engines
+    // make 461 N at idle. The aircraft must stand still, and it did not: a
+    // rolling resistance that faded to zero over a 0.3 m/s band let it roll at
+    // 0.12 m/s for ever, which is a meter every ten seconds.
+    const result = run({
+      height: ME262_STATIC_CG_HEIGHT + 0.001,
+      seconds: 10,
+      thrust: IDLE_THRUST,
+    });
+    expect(result.state.position.x).toBeLessThan(0.05);
+    expect(result.state.velocity.x).toBeLessThan(0.01);
+  });
+
+  it('rolls at idle once the thrust beats the rolling resistance', () => {
+    // Above 1254 N the aircraft has to move, brakes or no brakes.
+    const result = run({
+      height: ME262_STATIC_CG_HEIGHT + 0.001,
+      seconds: 10,
+      thrust: 4000,
+    });
+    expect(result.state.position.x).toBeGreaterThan(5);
+    expect(result.state.velocity.x).toBeGreaterThan(1);
   });
 });
 

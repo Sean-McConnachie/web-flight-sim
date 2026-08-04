@@ -44,7 +44,7 @@ import type { InputSystem } from '@/input/bindings';
 import { createInputSystem } from '@/input/bindings';
 import { clamp } from '@/math/tables';
 import { equivalentAirspeed } from '@/physics/atmosphere';
-import { createChaseCamera } from '@/render/cameras';
+import { createCameraRig } from '@/render/cameras';
 import { createForceArrows } from '@/render/force-arrows';
 import { nedQuatToThree, nedToThree } from '@/render/frames';
 import { createFreeCamera } from '@/render/free-camera';
@@ -54,11 +54,30 @@ import { createPostChain } from '@/render/postfx';
 import { createRenderer, isWebGPUAvailable } from '@/render/renderer';
 import type { TelemetrySample } from '@/ui/debug-overlay';
 import { createDebugOverlay } from '@/ui/debug-overlay';
+import { createHud } from '@/ui/hud';
 import { createTelemetryGraph } from '@/ui/telemetry-graph';
 import { createWorld } from '@/world/scene';
 
 /** Where the free camera starts, in NED, when the pilot turns it on. */
 const FREE_CAMERA_OFFSET_NED = new Vector3(-40, -25, -14);
+
+/**
+ * Rounds of 30 mm on board.
+ *
+ * The A-1a carries four MK 108. The upper pair holds 100 rounds each and the
+ * lower pair holds 80 each. Source: CONVENTIONS section 8 for the guns,
+ * pilot handbook for the load, confidence firm. Nothing fires yet, so the
+ * count is fixed. The bead that builds the guns replaces this constant with
+ * the real count.
+ */
+const AMMUNITION_ROUNDS = 360;
+
+/** What the head up display reads from one engine. The HUD type is readonly. */
+interface EngineReadoutFields {
+  rpm: number;
+  gasTemperature: number;
+  state: string;
+}
 
 /** Radius of each wheel, in meters, in the leg order of src/physics/gear.ts. */
 const WHEEL_RADII = [0.33, 0.42, 0.42];
@@ -87,6 +106,51 @@ function requireElement<T extends HTMLElement>(id: string): T {
   const el = document.getElementById(id);
   if (el === null) throw new Error(`The page has no element with the id "${id}".`);
   return el as T;
+}
+
+/** A panel that shows one message across the middle of the picture. */
+interface Banner {
+  show(text: string): void;
+  hide(): void;
+}
+
+/**
+ * Builds the divergence banner.
+ *
+ * The flight model of bead b53 stops the aircraft when a state value stops
+ * being a finite number, and it says so on `aircraft.events`. A simulator that
+ * freezes without a word looks like a fault of the machine, so the pilot must
+ * read what happened and how to carry on.
+ */
+function createBanner(parent: HTMLElement): Banner {
+  const root = document.createElement('div');
+  root.style.position = 'absolute';
+  root.style.top = '38%';
+  root.style.left = '50%';
+  root.style.transform = 'translate(-50%, -50%)';
+  root.style.maxWidth = '620px';
+  root.style.padding = '14px 20px';
+  root.style.display = 'none';
+  root.style.background = 'rgba(24, 6, 4, 0.86)';
+  root.style.border = '1px solid #ff6b5e';
+  root.style.borderRadius = '4px';
+  root.style.color = '#ffd9d4';
+  root.style.font = '14px/1.6 ui-monospace, "DejaVu Sans Mono", monospace';
+  root.style.textAlign = 'center';
+  // The message carries its own line breaks, so the box must keep them.
+  root.style.whiteSpace = 'pre-line';
+  root.style.pointerEvents = 'none';
+  root.style.userSelect = 'none';
+  parent.appendChild(root);
+  return {
+    show(text: string): void {
+      root.textContent = text;
+      root.style.display = 'block';
+    },
+    hide(): void {
+      root.style.display = 'none';
+    },
+  };
 }
 
 /**
@@ -198,10 +262,13 @@ async function main(): Promise<void> {
   const input = createInputSystem({ groundContact: () => aircraft.state.onGround });
 
   // --- The cameras -------------------------------------------------------
-  const chase = createChaseCamera(camera);
+  // V on the keyboard and Y on the gamepad step through the four flight views.
+  // F2 turns the free camera on and off. The free camera is a development tool,
+  // so it sits on a function key and not on the view key.
+  const rig = createCameraRig(camera);
   const freeCamera = createFreeCamera(camera, canvas);
   freeCamera.enabled = false;
-  let useChase = true;
+  let useFreeCamera = false;
 
   // --- The debug view ----------------------------------------------------
   const debug = createDebugOverlay(overlay);
@@ -240,6 +307,26 @@ async function main(): Promise<void> {
     atmosphere: aircraft.atmosphere,
   };
 
+  // --- The head up display -----------------------------------------------
+  // The display shows only in the outside views. The cockpit view has its own
+  // instruments, which bead b37 builds.
+  const hud = createHud(overlay);
+  const readoutEngines: EngineReadoutFields[] = aircraft.state.engines.map(() => ({
+    rpm: 0,
+    gasTemperature: 0,
+    state: 'off',
+  }));
+  // The display reads this record every frame, so it is built one time and
+  // written in place. Its shape is the AircraftReadout of src/ui/hud.ts.
+  const readout = {
+    engines: readoutEngines,
+    throttle: 0,
+    fuelMass: 0,
+    gearPosition: 0,
+    flapPosition: 0,
+    rounds: AMMUNITION_ROUNDS,
+  };
+
   // --- The render pose ---------------------------------------------------
   // The loop steps the physics a whole number of times per frame and reports
   // where the frame falls between the last two states. Keep both.
@@ -257,21 +344,50 @@ async function main(): Promise<void> {
   let pendingCycleView = false;
   let pendingToggleDebug = false;
 
+  // --- The divergence banner ---------------------------------------------
+  // The flight model reports a state that is no longer a finite number. It then
+  // holds the aircraft still until a respawn, so the pilot needs to read the
+  // reason and the way out.
+  const banner = createBanner(overlay);
+  aircraft.events.on('diverged', (event) => {
+    // The model writes the reason and the way out, so this line only adds the
+    // time. Two prints of one instruction read as two instructions.
+    banner.show(`THE FLIGHT MODEL DIVERGED AT ${event.time.toFixed(1)} s\n\n${event.message}`);
+  });
+
   /** Puts the aircraft back on the threshold and the camera behind it. */
   function respawn(): void {
+    banner.hide();
     aircraft.spawnOnRunway();
     previousPosition.copy(aircraft.state.body.position);
     previousOrientation.copy(aircraft.state.body.orientation);
     nedToThree(aircraft.state.body.position, renderPosition);
     nedQuatToThree(aircraft.state.body.orientation, renderOrientation);
-    chase.snap(renderPosition, renderOrientation);
+    rig.snap();
     wheelAngles[0] = 0;
     wheelAngles[1] = 0;
     wheelAngles[2] = 0;
   }
 
+  /** Hands the camera to the free camera, or takes it back. */
+  function toggleFreeCamera(): void {
+    useFreeCamera = !useFreeCamera;
+    freeCamera.enabled = useFreeCamera;
+    if (useFreeCamera) {
+      // Put the free camera where it can see the aircraft, then let it fly.
+      nedToThree(FREE_CAMERA_OFFSET_NED, freeCameraStart);
+      camera.position.copy(renderPosition).add(freeCameraStart);
+      camera.up.set(0, 1, 0);
+      camera.lookAt(renderPosition);
+    } else {
+      rig.snap();
+    }
+  }
+
   window.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.code === 'KeyR' && !event.repeat) respawn();
+    if (event.repeat) return;
+    if (event.code === 'KeyR') respawn();
+    if (event.code === 'F2') toggleFreeCamera();
   });
 
   const loop = createLoop({
@@ -297,17 +413,7 @@ async function main(): Promise<void> {
 
       if (pendingCycleView) {
         pendingCycleView = false;
-        useChase = !useChase;
-        freeCamera.enabled = !useChase;
-        if (!useChase) {
-          // Put the free camera where it can see the aircraft, then let it fly.
-          nedToThree(FREE_CAMERA_OFFSET_NED, freeCameraStart);
-          camera.position.copy(renderPosition).add(freeCameraStart);
-          camera.up.set(0, 1, 0);
-          camera.lookAt(renderPosition);
-        } else {
-          chase.snap(renderPosition, renderOrientation);
-        }
+        rig.cycle();
       }
       if (pendingToggleDebug) {
         pendingToggleDebug = false;
@@ -315,10 +421,20 @@ async function main(): Promise<void> {
         applyDebugLevel();
       }
 
-      if (useChase) {
-        chase.update(renderPosition, renderOrientation, frameDt);
-      } else {
+      if (useFreeCamera) {
         freeCamera.update(frameDt);
+      } else {
+        // The rig takes the NED pose and converts it itself, so this file hands
+        // over the blended physics pose and not the render pose.
+        rig.update(
+          blendedPosition,
+          blendedOrientation,
+          aircraft.state.loadFactor,
+          aircraft.state.totals.trueAirspeed,
+          input.state.lookYaw,
+          input.state.lookPitch,
+          frameDt,
+        );
       }
 
       // The arrows hang under the model, so their frame is the body frame
@@ -342,10 +458,40 @@ async function main(): Promise<void> {
       debug.update(telemetry);
       graph.push(telemetry, loop.stats.simTime);
 
+      // The head up display belongs to the outside views only.
+      const systems = aircraft.state.systems.state;
+      for (let i = 0; i < readoutEngines.length; i++) {
+        const engine = aircraft.state.engines[i];
+        readoutEngines[i].rpm = engine.rpm;
+        readoutEngines[i].gasTemperature = engine.gasTemperature;
+        readoutEngines[i].state = engine.state;
+      }
+      readout.throttle = input.state.throttle;
+      readout.fuelMass = systems.fuelMass;
+      readout.gearPosition = systems.gearPosition;
+      readout.flapPosition = systems.flapPosition;
+      hud.visible = rig.mode !== 'cockpit';
+      hud.update(telemetry, readout);
+
       world.update(frameDt, camera.position);
       post.render();
     },
   });
+
+  // A handle for the development tools. The screenshot harness reads the
+  // backend, places the aircraft, and steps the views through it. Nothing
+  // inside src reads it.
+  (window as unknown as { sim: unknown }).sim = {
+    bundle,
+    scene,
+    camera,
+    world,
+    aircraft,
+    input,
+    rig,
+    hud,
+    loop,
+  };
 
   respawn();
   loop.start();

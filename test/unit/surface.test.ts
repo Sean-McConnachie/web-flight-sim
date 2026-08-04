@@ -178,6 +178,40 @@ describe('the local flow of a strip', () => {
     run(s, flightVelocity(100, 2 * DEG), { omega: new Vector3(0, 0.2, 0), steps: 200 });
     expect(s.result.alpha - level).toBeCloseTo((0.2 * 4.5) / 100, 3);
   });
+
+  it('reports no angle at all when there is no flow to take an angle from', () => {
+    // Bead b54. alpha is the atan2 of two components of the local flow. A parked
+    // aircraft settles on its struts at nanometers per second, and the ANGLE
+    // between two numbers that small is pure noise: the strips of the wing read
+    // 20 degrees, 12 degrees and 5 degrees while the aircraft stood still. The
+    // force arrows read this same field, so a parked aircraft painted itself
+    // deep stall red.
+    const s = createSurface(strip({ incidence: 3 * DEG }));
+    // Fly it first, so the answer below cannot be the value it started at.
+    run(s, flightVelocity(100, 12 * DEG), { steps: 200 });
+    expect(s.result.alpha).toBeGreaterThan(10 * DEG);
+
+    // The settling motion of a parked aircraft, and nothing else.
+    run(s, new Vector3(1.4e-9, -3e-10, 9e-10), { steps: 10 });
+    // Zero, not the value of the last evaluation. No flow, no angle.
+    expect(s.result.alpha).toBe(0);
+    expect(s.result.beta).toBe(0);
+    // The strip still reports the flow it really sees.
+    expect(s.result.speed).toBeGreaterThan(0);
+    expect(s.result.dynamicPressure).toBeGreaterThanOrEqual(0);
+    // And it makes no force worth the name, so nothing else changes.
+    const w = run(s, new Vector3(1.4e-9, -3e-10, 9e-10), { steps: 1 });
+    expect(w.force.length()).toBeLessThan(1e-9);
+  });
+
+  it('takes the angle again as soon as the aircraft moves', () => {
+    // The gate has to cost nothing at any speed a wing works at. One meter per
+    // second is a dynamic pressure of 0.61 Pa, which is a newton over a whole
+    // aircraft.
+    const s = createSurface(strip());
+    run(s, flightVelocity(4, 6 * DEG), { steps: 200 });
+    expect(s.result.alpha).toBeCloseTo(6 * DEG, 6);
+  });
 });
 
 describe('roll damping and pitch damping are emergent', () => {

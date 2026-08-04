@@ -312,8 +312,28 @@ const X_AC_ATTACHED = 0.25;
 // fraction of the peak. Below it the shock has no separated flow to work on.
 const CL_MAX_KNEE = 0.5;
 
-// Below this speed the flow angles carry no information.
-const MIN_FLOW_SPEED = 1e-6; // m/s
+/**
+ * Below this speed the flow angles of a strip carry no information, m/s.
+ *
+ * alpha is atan2 of the two components of the local flow, and beta is the asin
+ * of a third one over their length. At rest all three are the settling motion of
+ * the struts and nothing else, so the ANGLE between them is numerical noise: a
+ * parked aircraft reported 20 degrees on one strip and 12 on the next, from a
+ * local speed of 2 nanometers per second. Anything that reads SurfaceResult.alpha
+ * then paints a standing aircraft as a stalled one.
+ *
+ * The two angles therefore report ZERO below this speed, and not the value of
+ * the last evaluation. Zero is what the flow really is: no flow, no angle. A
+ * held value would be worse, because it would freeze whatever angle the aircraft
+ * carried into the last moment before it stopped, and a wreck lying on the
+ * runway would report the angle it hit the ground at for ever.
+ *
+ * The value costs nothing. At 1 m/s the dynamic pressure is 0.61 Pa, which is
+ * about one newton over the whole aircraft, or a hundred-thousandth of its
+ * weight. The rule matches flowAngles of src/physics/rigidbody.ts, which already
+ * reports zero for the aircraft as a whole below a speed of its own.
+ */
+const MIN_FLOW_SPEED = 1; // m/s
 
 // Scratch held in module scope. The step allocates nothing.
 const localVelocity = new Vector3();
@@ -420,6 +440,33 @@ export function createSurface(def: SurfaceDef): Surface {
 }
 
 /**
+ * Puts one strip back to the state createSurface left it in.
+ *
+ * The strip carries a lagged separation point between steps. A value that is not
+ * finite can never leave that state on its own, because every later step reads
+ * it, so a caller that has to recover from a diverged step must clear it. The
+ * aircraft calls this on a respawn and after it catches a state that is not
+ * finite. Nothing else needs it.
+ */
+export function resetSurface(s: Surface): void {
+  s.state.stall.f = 1;
+  s.state.lastAlpha = 0;
+  s.state.lastForce.set(0, 0, 0);
+  const r = s.result;
+  r.alpha = 0;
+  r.beta = 0;
+  r.dynamicPressure = 0;
+  r.speed = 0;
+  r.cl = 0;
+  r.cd = 0;
+  r.cm = 0;
+  r.separation = 1;
+  r.slatOpen = false;
+  r.force.set(0, 0, 0);
+  r.moment.set(0, 0, 0);
+}
+
+/**
  * Writes the local air velocity of one strip into localVelocity, in body axes,
  * and then into stripVelocity, in strip axes.
  *
@@ -493,8 +540,9 @@ export function evaluateSurface(
   const normalSpeed = Math.sqrt(normalSpeedSquared);
   const q = 0.5 * density * normalSpeedSquared;
 
-  // The angle of attack of the section normal to the quarter chord line.
-  const alphaGeometric = Math.atan2(w, un);
+  // The angle of attack of the section normal to the quarter chord line. Below
+  // MIN_FLOW_SPEED there is no flow to take an angle from, so it reports zero.
+  const alphaGeometric = normalSpeed > MIN_FLOW_SPEED ? Math.atan2(w, un) : 0;
   const stripSpeed = stripVelocity.length();
   const beta =
     stripSpeed > MIN_FLOW_SPEED ? Math.asin(clamp(stripVelocity.y / stripSpeed, -1, 1)) : 0;
@@ -672,7 +720,10 @@ export function estimateSurfaceLoad(
     alphaZeroLift += def.flapEffectiveness * controls[def.flapIndex] * mach.controlScale;
   }
 
+  // The same MIN_FLOW_SPEED rule that evaluateSurface follows. One rule, one
+  // answer: the estimate must agree with the evaluation it is an estimate of.
+  const alphaGeometric = Math.hypot(un, w) > MIN_FLOW_SPEED ? Math.atan2(w, un) : 0;
   const slope = def.airfoil.clAlpha * mach.clScale * separationFactor(s.state.stall.f);
-  out.lift = q * def.area * slope * (Math.atan2(w, un) - alphaZeroLift);
+  out.lift = q * def.area * slope * (alphaGeometric - alphaZeroLift);
   out.slope = (q * def.area * slope) / g.cosSweep;
 }

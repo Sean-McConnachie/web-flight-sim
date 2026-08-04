@@ -14,7 +14,9 @@
  *   1. clear
  *   2. aerodynamics   src/physics/aero/assembly.ts, which ADDS into the wrench
  *   3. thrust         each engine along body +x, AT its own nacelle position
- *   4. landing gear   src/physics/gear.ts, which ADDS into the wrench
+ *   4. the ground     the three gear legs of src/physics/gear.ts and the seven
+ *                     airframe points of src/physics/contact.ts, summed into one
+ *                     wrench and capped there
  *   5. gravity        m * G0 on the world z axis, rotated into body axes
  *
  * GRAVITY. stepRK4 of src/physics/rigidbody.ts applies nothing on its own, so
@@ -39,6 +41,9 @@
  *                the tire slip are all state. gear.ts says the strut, the tire
  *                and the friction are pure functions of the state, so the same
  *                wrench is correct in every stage.
+ *   the airframe ONE time, with the gear and into the same wrench. It holds no
+ *                state of its own, but its friction reads the step, and the cap
+ *                on the sum can only act on a sum that is complete.
  *   systems      ONE time, before the step. Flap, gear and slat travel.
  *   aerodynamics FOUR times, which is what the assembly is built for. The
  *                induced angle is solved in closed form inside each call, so
@@ -65,7 +70,19 @@
  * identity for the life of the aircraft.
  *
  *
- * 4. THE SEPARATION RULE
+ * 4. WHEN THE STEP FAILS
+ *
+ * Nothing an explicit fixed step integrates is safe against every state a pilot
+ * can reach. The ground contact is bounded, the airframe touches the ground
+ * before the gear can be driven through its hard stop, and both of those exist
+ * so that this last guard never fires. It still exists. fixedUpdate reads the
+ * whole state after every step, and if one number is not finite it puts the
+ * aircraft back to the state it held before the step, holds it there, and
+ * reports it on `events`. A simulator that dies without a word is worse than one
+ * that says it crashed. The pilot presses R and flies again.
+ *
+ *
+ * 5. THE SEPARATION RULE
  *
  * CONVENTIONS section 4. This file is physics. It imports no renderer, no DOM
  * and no browser API, and it does not import src/input. The pilot command
@@ -76,6 +93,8 @@
 
 import { Matrix3, Quaternion, Vector3 } from 'three';
 
+import type { Emitter } from '@/core/events';
+import { createEmitter } from '@/core/events';
 import { clamp } from '@/math/tables';
 import { G0 } from '@/math/units';
 import type { AtmosphereSample } from '@/physics/atmosphere';
@@ -86,8 +105,15 @@ import {
   machNumber,
 } from '@/physics/atmosphere';
 import type { AeroAssembly, AeroTotals } from '@/physics/aero/assembly';
+import { resetSurface } from '@/physics/aero/surface';
+import type { AirframeContact } from '@/physics/contact';
+import { MAX_GROUND_LOAD_FACTOR, limitContactWrench } from '@/physics/contact';
 import type { LandingGear } from '@/physics/gear';
-import { ME262_STATIC_CG_HEIGHT, createMe262Gear } from '@/physics/gear';
+import {
+  ME262_STATIC_CG_HEIGHT,
+  createMe262AirframeContact,
+  createMe262Gear,
+} from '@/physics/gear';
 import type { FlowAngles, MassProperties, RigidBodyState, Wrench } from '@/physics/rigidbody';
 import {
   addWrench,
@@ -167,21 +193,6 @@ const SLAT_ALPHA_LEFT_INDEX = 5;
 const SLAT_ALPHA_RIGHT_INDEX = 13;
 
 /**
- * Airspeed below which the slat mechanism reads no angle of attack, m/s.
- *
- * SurfaceResult.alpha is atan2 of the two components of the local flow. At rest
- * both components are near zero, so the value is numerical noise: a parked
- * aircraft reports 91 degrees on every strip, because the tiny settling motion
- * of the struts is the whole flow. Without this gate the mechanism reads that
- * noise and runs the slats out while the aircraft stands on the runway.
- *
- * The value sits far below any speed at which the slat can matter. The slat of
- * the Me 262 opens near a lift coefficient of 0.68, which is 66 m/s at the
- * loaded mass, so nothing is lost.
- */
-const MIN_SLAT_SPEED = 10; // m/s
-
-/**
  * Rotor speed at which the fuel cock of one engine opens, rpm.
  *
  * THE FUEL COCK IS PART OF THE START PROCEDURE, NOT OF THE ENGINE. The pilot
@@ -248,10 +259,26 @@ export interface AircraftState {
   onGround: boolean;
   /** Body z specific force over standard gravity. Level flight reads 1. */
   loadFactor: number;
-  // The two members below are additions to the bead b25 contract. The render
+  // The three members below are additions to the bead b25 contract. The render
   // model needs the wheel spin and the strut stroke, and neither can be derived
   // from the members above.
   gear: LandingGear;
+  /** The nose, the belly, the nacelles, the wing tips and the tail. */
+  contacts: AirframeContact;
+  /**
+   * True after the integrator produced a value that is not finite. The aircraft
+   * is held where it was and fixedUpdate does nothing until the next spawn.
+   */
+  diverged: boolean;
+}
+
+/** What the aircraft reports to anything that listens. */
+export interface AircraftEvents {
+  /**
+   * The step produced a state that is not finite. The aircraft is held at the
+   * last state that was, and only a spawn clears it.
+   */
+  diverged: { message: string; time: number };
 }
 
 export interface Aircraft {
@@ -281,6 +308,11 @@ export interface Aircraft {
   readonly wrench: Wrench;
   /** Simulated time since the last spawn, s. */
   readonly time: number;
+  /**
+   * What the aircraft reports. Section 4 of the module comment says when the
+   * one event fires. src/main.ts binds R to spawnOnRunway, which clears it.
+   */
+  readonly events: Emitter<AircraftEvents>;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,9 +330,37 @@ function isLit(state: EngineState): boolean {
   );
 }
 
+/** Copies one rigid body state into another. It allocates nothing. */
+function copyState(target: RigidBodyState, source: RigidBodyState): void {
+  target.position.copy(source.position);
+  target.velocity.copy(source.velocity);
+  target.orientation.copy(source.orientation);
+  target.angularVelocity.copy(source.angularVelocity);
+}
+
+/** True while every number of one state is finite. */
+function stateIsFinite(s: RigidBodyState): boolean {
+  return (
+    Number.isFinite(s.position.x) &&
+    Number.isFinite(s.position.y) &&
+    Number.isFinite(s.position.z) &&
+    Number.isFinite(s.velocity.x) &&
+    Number.isFinite(s.velocity.y) &&
+    Number.isFinite(s.velocity.z) &&
+    Number.isFinite(s.orientation.x) &&
+    Number.isFinite(s.orientation.y) &&
+    Number.isFinite(s.orientation.z) &&
+    Number.isFinite(s.orientation.w) &&
+    Number.isFinite(s.angularVelocity.x) &&
+    Number.isFinite(s.angularVelocity.y) &&
+    Number.isFinite(s.angularVelocity.z)
+  );
+}
+
 export function createAircraft(): Aircraft {
   const assembly = createMe262Assembly();
   const gear = createMe262Gear();
+  const contacts = createMe262AirframeContact();
   const systems = createMe262Systems();
   const engines: readonly Engine[] = [
     createJumo004(ENGINE_POSITION_LEFT),
@@ -353,15 +413,21 @@ export function createAircraft(): Aircraft {
     onGround: false,
     loadFactor: 1,
     gear,
+    contacts,
+    diverged: false,
   };
+
+  const events: Emitter<AircraftEvents> = createEmitter<AircraftEvents>();
 
   // --- Scratch. fixedUpdate allocates nothing. ---
   const atmosphere: AtmosphereSample = createAtmosphereSample();
   const flow: FlowAngles = { alpha: 0, beta: 0, speed: 0 };
   const airspeed = new Vector3();
   const wind = new Vector3(0, 0, 0);
-  const gearWrench: Wrench = createWrench();
+  const groundWrench: Wrench = createWrench();
   const stepWrench: Wrench = createWrench();
+  /** The state at the top of the step. The guard of section 4 falls back to it. */
+  const lastGoodState: RigidBodyState = createState();
   const thrustForce = new Vector3();
   const thrustMoment = new Vector3();
   const gravityWorld = new Vector3();
@@ -421,8 +487,9 @@ export function createAircraft(): Aircraft {
       out.moment.add(thrustMoment);
     }
 
-    // 4. The landing gear. The wrench was built one time before the step.
-    addWrench(out, gearWrench);
+    // 4. The ground. The gear and the airframe points were both built one time
+    // before the step, into one wrench, and capped there.
+    addWrench(out, groundWrench);
 
     // 5. Gravity. stepRK4 adds none of its own. The rotation must use the
     // orientation of THIS stage, which is why gravity sits here and not in
@@ -480,6 +547,12 @@ export function createAircraft(): Aircraft {
       body.orientation.copy(spawnHeading);
 
       gear.reset();
+      contacts.reset();
+      // The lagged separation point of every strip is state as well, and a value
+      // that is not finite can never leave it on its own. See resetSurface.
+      for (const surface of assembly.surfaces) {
+        resetSurface(surface);
+      }
       for (const engine of engines) {
         engine.reset();
       }
@@ -501,8 +574,9 @@ export function createAircraft(): Aircraft {
       controls.fill(0);
       writeMass(FUEL_CAPACITY);
       clearWrench(stepWrench);
-      clearWrench(gearWrench);
+      clearWrench(groundWrench);
       state.onGround = true;
+      state.diverged = false;
       state.loadFactor = 1;
       totals.alpha = 0;
       totals.beta = 0;
@@ -517,8 +591,10 @@ export function createAircraft(): Aircraft {
       isa(ME262_STATIC_CG_HEIGHT, atmosphere);
     },
 
+    events,
+
     fixedUpdate(input: AircraftInput, dt: number): void {
-      if (!(dt > 0)) {
+      if (!(dt > 0) || state.diverged) {
         return;
       }
       stepDt = dt;
@@ -551,12 +627,14 @@ export function createAircraft(): Aircraft {
       // The slat MECHANISM follows the local angle of the outer wing. The two
       // strips report the value of the last step, which is one step of lag on
       // a mechanism that takes half a second to run out.
+      //
+      // There is no speed gate here. surface.ts reports zero below its own
+      // MIN_FLOW_SPEED, where the angle carries no flow and no information, so
+      // a parked aircraft reads zero on both strips and the slats stay in.
       const outerAlpha =
-        trueAirspeed > MIN_SLAT_SPEED
-          ? 0.5 *
-            (assembly.surfaces[SLAT_ALPHA_LEFT_INDEX].result.alpha +
-              assembly.surfaces[SLAT_ALPHA_RIGHT_INDEX].result.alpha)
-          : 0;
+        0.5 *
+        (assembly.surfaces[SLAT_ALPHA_LEFT_INDEX].result.alpha +
+          assembly.surfaces[SLAT_ALPHA_RIGHT_INDEX].result.alpha);
       let fuelFlow = 0;
       for (const engine of engines) {
         fuelFlow += engine.fuelFlow;
@@ -590,10 +668,10 @@ export function createAircraft(): Aircraft {
         engine.update(engineInput, dt);
       }
 
-      // --- The landing gear, one time per step ----------------------------
+      // --- The ground, one time per step ----------------------------------
       // The rudder pedals steer the nose wheel. That is how this aircraft
       // turns at taxi speed, together with the differential brake.
-      clearWrench(gearWrench);
+      clearWrench(groundWrench);
       gear.update(
         body,
         systems.state.gearPosition,
@@ -601,14 +679,47 @@ export function createAircraft(): Aircraft {
         systems.state.brakeLeft,
         systems.state.brakeRight,
         dt,
-        gearWrench,
+        groundWrench,
       );
-      state.onGround = gear.anyOnGround;
+      // The airframe itself. Without it the ONLY part of the aircraft the ground
+      // can push on is the tire contact patch, so an arrival that carries the
+      // center of gravity below the ground plane drives the gear far past its
+      // hard stop and no fixed step can follow that force.
+      contacts.update(body, dt, groundWrench);
+      state.onGround = gear.anyOnGround || contacts.anyOnGround;
+      // Both parts cap what they make on their own. The cap here is on the SUM,
+      // at the weight the aircraft carries now, so no combination of the two can
+      // ask the integrator for a force no airframe would survive.
+      limitContactWrench(groundWrench, MAX_GROUND_LOAD_FACTOR * massProperties.mass * G0);
 
       // --- The step -------------------------------------------------------
+      copyState(lastGoodState, body);
       firstStage = true;
       stepRK4(body, massProperties, source, simTime, dt);
       simTime += dt;
+
+      // --- The guard ------------------------------------------------------
+      // Section 4 of the module comment. Everything above exists so that this
+      // never fires. It fires anyway one day.
+      if (!stateIsFinite(body)) {
+        copyState(body, lastGoodState);
+        body.velocity.set(0, 0, 0);
+        body.angularVelocity.set(0, 0, 0);
+        for (const surface of assembly.surfaces) {
+          resetSurface(surface);
+        }
+        clearWrench(stepWrench);
+        clearWrench(groundWrench);
+        state.diverged = true;
+        state.loadFactor = 1;
+        events.emit('diverged', {
+          message:
+            'The flight model lost the aircraft. The step produced a value that is not a ' +
+            'number, so the aircraft is held where it last was. Press R to fly again.',
+          time: simTime,
+        });
+        return;
+      }
 
       // --- The mass, as the fuel burns ------------------------------------
       if (Math.abs(systems.state.fuelMass - massFuel) >= MASS_UPDATE_FUEL) {

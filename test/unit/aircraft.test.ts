@@ -86,6 +86,23 @@ describe('the aircraft on its gear', () => {
     expect(a.state.onGround).toBe(true);
   });
 
+  it('reports no angle of attack anywhere while it stands still', () => {
+    // Bead b54. Every strip used to report the atan2 of two numbers near zero,
+    // which is noise, and the force arrows painted a parked aircraft deep stall
+    // red. surface.ts answers zero below its own flow speed now, so the whole
+    // aircraft reads zero and the slats stay shut.
+    const a = createAircraft();
+    const input = neutral();
+    run(a, input, 10);
+    for (const surface of a.assembly.surfaces) {
+      expect(surface.result.alpha).toBe(0);
+      expect(surface.result.beta).toBe(0);
+      expect(surface.result.slatOpen).toBe(false);
+    }
+    expect(a.state.totals.alpha).toBe(0);
+    expect(a.state.systems.state.slatPosition).toBe(0);
+  });
+
   it('carries the whole weight on the struts, so the total force at rest is zero', () => {
     const a = createAircraft();
     const input = neutral();

@@ -50,6 +50,17 @@ const TAIL_STRIP_START = 16;
 const FIN_STRIP_START = 20;
 const SURFACE_COUNT = 22;
 
+// Depth of the ground line below the fuselage reference plane, with the gear
+// down. src/render/models/me262.ts puts the ground line at -1.33 m.
+const GROUND_BELOW_DATUM = 1.33; // m
+
+// Yaw of one dead engine at full power on the other, from the 8.8 kN of one
+// Jumo 004 B-1 at the 2.05 m engine offset.
+const ASYMMETRIC_YAW = 8800 * 2.05; // N m
+
+// Rudder travel limit. src/render/models/me262.ts gives 0.44 rad.
+const RUDDER_LIMIT = 0.44; // rad
+
 /**
  * Steady evaluation of the whole aircraft at a given flow state.
  *
@@ -371,8 +382,29 @@ describe('Me 262 tail sizing', () => {
 
   it('the vertical tail volume coefficient sits in the twin engine fighter band', () => {
     const volume = verticalTailVolume();
-    expect(volume).toBeGreaterThan(0.02);
-    expect(volume).toBeLessThan(0.06);
+    // The fin area here runs from the fin root, 0.44 m above the fuselage
+    // center line. Raymer and Roskam quote 0.04 to 0.07 for a fighter with the
+    // fin carried to the center line, which is 0.031 to 0.055 on this
+    // convention. The band below is that one, opened by ten percent at each
+    // end. Bead b49 measured 0.039.
+    expect(volume).toBeGreaterThan(0.028);
+    expect(volume).toBeLessThan(0.061);
+  });
+
+  it('the fin tip stands 3.83 m above the ground line', () => {
+    // The ground line sits 1.33 m below the fuselage reference plane. The
+    // National Air and Space Museum gives 12 ft 7 in for the overall height of
+    // the A-1a airframe it holds, which is 3.84 m. CONVENTIONS section 8 gives
+    // 3.50 m and that entry is wrong. Bead b49 sized the fin from the museum
+    // figure and the single engine control speed then came out right.
+    const surfaces = me262Surfaces();
+    let top = 0;
+    for (let i = FIN_STRIP_START; i < SURFACE_COUNT; i++) {
+      top = Math.max(top, -surfaces[i].position.z + 0.5 * surfaces[i].span);
+    }
+    // Body z runs down from the center of gravity, so -z is the height above
+    // it. CG_HEIGHT_FROM_DATUM carries that point back to the reference plane.
+    expect(top + CG_HEIGHT_FROM_DATUM + GROUND_BELOW_DATUM).toBeCloseTo(3.83, 2);
   });
 
   it('the engines hang outboard and below the center of gravity', () => {
@@ -407,6 +439,34 @@ describe('Me 262 static stability', () => {
     expect(right.wrench.force.y).toBeLessThan(0);
   });
 
+  it('the yaw stiffness beats the fuselage and reaches the twin engine fighter band', () => {
+    const assembly = createMe262Assembly();
+    const controls = neutralControls();
+    const step = 2 * DEG;
+    const low = flyAt(assembly, 2 * DEG, -step, controls);
+    const high = flyAt(assembly, 2 * DEG, step, controls);
+    const reference = low.dynamicPressure * WING_AREA * WING_SPAN;
+    const cnBeta = (high.wrench.moment.z - low.wrench.moment.z) / (reference * 2 * step);
+    // A fighter carries 0.05 to 0.15 per radian. This aircraft sits at the low
+    // end and cannot reach the middle of the band: its engines hang on the
+    // wing, which puts the center of gravity at 54 percent of the fuselage
+    // length and leaves a fin arm of 0.23 spans against 0.42 for a Mustang.
+    // Bead b49 measured 0.039 with the fin at 0.116 and the bodies at -0.074.
+    expect(cnBeta).toBeGreaterThan(0.03);
+    expect(cnBeta).toBeLessThan(0.15);
+  });
+
+  it('full rudder holds one dead engine at the 300 km/h the pilot notes name', () => {
+    const assembly = createMe262Assembly();
+    const controls = neutralControls();
+    controls[CONTROL_INDEX.rudder] = RUDDER_LIMIT;
+    // The pilot notes warn against single engine flight below 300 km/h. Test
+    // at 310 km/h, wings level and no sideslip, which is the hardest case: a
+    // real pilot banks a few degrees into the live engine and needs less.
+    const held = flyAt(assembly, 2 * DEG, 0, controls, 310 / 3.6);
+    expect(Math.abs(held.wrench.moment.z)).toBeGreaterThan(ASYMMETRIC_YAW);
+  });
+
   it('the swept wing and the dihedral roll the aircraft away from a sideslip', () => {
     const assembly = createMe262Assembly();
     const controls = neutralControls();
@@ -414,6 +474,80 @@ describe('Me 262 static stability', () => {
     // A positive sideslip must give a negative roll moment, which lifts the
     // right wing. That is the dihedral effect and it must be stable.
     expect(result.wrench.moment.x).toBeLessThan(0);
+  });
+});
+
+describe('Me 262 stall pattern', () => {
+  /** Angle of the peak lift coefficient of the whole aircraft, in radians. */
+  function peakLiftAngle(assembly: AeroAssembly, controls: Float64Array): number {
+    let best = Number.NEGATIVE_INFINITY;
+    let at = 0;
+    for (let deg = 8; deg <= 30; deg += 0.25) {
+      const result = flyAt(assembly, deg * DEG, 0, controls, 80);
+      const cl = result.lift / (result.dynamicPressure * WING_AREA);
+      if (cl > best) {
+        best = cl;
+        at = deg * DEG;
+      }
+    }
+    return at;
+  }
+
+  it('the root separates long before the slatted outer wing at the clean stall', () => {
+    const assembly = createMe262Assembly();
+    const controls = neutralControls();
+    flyAt(assembly, peakLiftAngle(assembly, controls), 0, controls, 80);
+    // Strips 8 to 10 carry no slat. Strips 11 to 15 carry one.
+    let root = 0;
+    for (let i = 8; i < 11; i++) {
+      root += assembly.surfaces[i].result.separation / 3;
+    }
+    let slatted = 0;
+    for (let i = 11; i < 16; i++) {
+      slatted += assembly.surfaces[i].result.separation / 5;
+    }
+    // The separation point runs from 1 attached to 0.04 fully separated. The
+    // root must be past the half way mark while the slatted wing is still
+    // largely attached, which is what keeps the aileron working through the
+    // break. Bead b55 measured 0.33 at the root and 0.84 outboard.
+    expect(root).toBeLessThan(0.5);
+    expect(slatted).toBeGreaterThan(0.7);
+    expect(slatted - root).toBeGreaterThan(0.3);
+  });
+
+  it('the stall makes no roll at zero sideslip and a clear roll at two degrees', () => {
+    const assembly = createMe262Assembly();
+    const controls = neutralControls();
+    const alpha = peakLiftAngle(assembly, controls);
+
+    const straight = flyAt(assembly, alpha, 0, controls, 80);
+    const scale = straight.dynamicPressure * WING_AREA * WING_SPAN;
+    // The two wings are exact mirrors, so a symmetric stall makes no roll. The
+    // model adds no asymmetry of its own and none is wanted: a wing drop must
+    // come out of a real sideslip.
+    expect(Math.abs(straight.wrench.moment.x) / scale).toBeLessThan(1e-9);
+
+    const yawed = flyAt(assembly, alpha, 2 * DEG, controls, 80);
+    // A small sideslip does break the symmetry, and the windward wing lifts.
+    // Bead b55 measured -0.0092 at the clean peak.
+    expect(yawed.wrench.moment.x / scale).toBeLessThan(-0.004);
+  });
+
+  it('the landing flap adds about 17 percent of peak lift over the clean wing', () => {
+    const assembly = createMe262Assembly();
+    const peak = (flap: number): number => {
+      const controls = neutralControls();
+      controls[CONTROL_INDEX.flap] = flap;
+      const result = flyAt(assembly, peakLiftAngle(assembly, controls), 0, controls, 80);
+      return result.lift / (result.dynamicPressure * WING_AREA);
+    };
+    const clean = peak(0);
+    const landing = peak(50 * DEG);
+    // A slotted flap over 29 percent of the span is worth about a sixth of the
+    // peak lift. Below 12 percent the flap would not be worth its drag, and
+    // above 22 percent this flap would be doing the work of a full span one.
+    expect(landing / clean - 1).toBeGreaterThan(0.12);
+    expect(landing / clean - 1).toBeLessThan(0.22);
   });
 });
 

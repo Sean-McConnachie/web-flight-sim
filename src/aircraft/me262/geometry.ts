@@ -155,6 +155,12 @@ const TAN_DIHEDRAL = Math.tan(WING_DIHEDRAL);
  * wing drops, and the aileron keeps its bite through the break. The automatic
  * slat on the outer wing does the same job from the other side. Estimate from a
  * three view, confidence: medium.
+ *
+ * Bead b55 measured how much of the tip protection this angle really buys. At
+ * the clean peak lift the three inboard strips sit at a separation point of
+ * 0.33 and the five slatted strips at 0.84. With the washout taken to zero the
+ * same two numbers are 0.36 and 0.82. The SLAT holds the outer wing, not the
+ * twist, so the value is not the reason this aircraft stalls straight ahead.
  */
 const ROOT_INCIDENCE = 1.5 * DEG;
 const TIP_INCIDENCE = 0;
@@ -180,6 +186,24 @@ const FLAP_INNER: readonly [number, number] = [0.62, 1.56];
 /** Outer flap panel, outboard of the nacelle. */
 const FLAP_OUTER: readonly [number, number] = [2.5, 3.38];
 const AILERON_SPAN: readonly [number, number] = [4.0, 5.98];
+
+/**
+ * Span the automatic slat covers, which is the outer 48 percent of the semi
+ * span.
+ *
+ * THE REAL AIRCRAFT CARRIED MORE SLAT THAN THIS. The A-1a had three separate
+ * slat panels on each wing, and the innermost one sat between the fuselage and
+ * the engine nacelle. The leading edge was therefore slatted over nearly its
+ * whole span, with a break at the nacelle. Source: Wikipedia, Messerschmitt
+ * Me 262, wing description, confidence: medium.
+ *
+ * The model holds the outer panels only. That choice is conservative for the
+ * stall: an inboard slat would hold the root attached as well, would raise the
+ * peak lift of the whole wing, and would drop the stall speed below the 180 to
+ * 202 km/h band of the pilot handbook that bead b33 tuned against. The missing
+ * inboard panel therefore belongs to its own bead, together with a new stall
+ * speed calibration. See the report of bead b55.
+ */
 const SLAT_SPAN: readonly [number, number] = [3.0, 6.02];
 
 /**
@@ -316,22 +340,63 @@ const TAIL_INCIDENCE = 0;
 const FIN_ROOT_QUARTER_STATION = 8.1175; // m
 /** Height of the fin root above the fuselage reference plane. */
 const FIN_ROOT_HEIGHT = 0.5; // m
-const FIN_SPAN = 1.67; // m
+
+/**
+ * Fin span, from the root inside the fuselage to the tip.
+ *
+ * THE VALUE FOLLOWS THE PUBLISHED OVERALL HEIGHT. The ground line sits 1.33 m
+ * below the fuselage reference plane and the fin root sits 0.5 m above it, so a
+ * span of 2.00 m puts the fin tip 3.83 m above the ground.
+ *
+ * The National Air and Space Museum gives 12 ft 7 in, that is 3.84 m, for the
+ * A-1a airframe it holds. flugzeuginfo.net gives 3.84 m and ww2db and
+ * militaryfactory both give 3.8 m. CONVENTIONS section 8 carries 3.50 m and
+ * marks it firm. That entry is the outlier and the report of bead b49 asks for
+ * it to be corrected.
+ *
+ * A second, independent measurement fixes the same number. A fin of 1.67 m span
+ * holds the yaw of one dead engine at full rudder only above 373 km/h. The
+ * pilot notes warn against single engine flight below 300 km/h, and a fin of
+ * 2.00 m span reaches 305 km/h. Confidence: derived from firm data.
+ *
+ * src/render/models/me262.ts still draws the 1.67 m fin, with its rudder span
+ * of 0.25 to 1.52 m. The two files disagree until that one follows. Bead b49
+ * does not own the render model, so its report names the change.
+ */
+const FIN_SPAN = 2.0; // m
 const FIN_ROOT_CHORD = 2.55; // m
 const FIN_TIP_CHORD = 1.15; // m
 /** The fin quarter chord sweeps 30.7 degrees. Estimate from a three view. */
 const FIN_TAN_SWEEP = 0.594;
-const RUDDER_SPAN: readonly [number, number] = [0.25, 1.52];
+/** The rudder stops 0.15 m below the fin tip, where the tip cap starts. */
+const RUDDER_SPAN: readonly [number, number] = [0.25, FIN_SPAN - 0.15];
 
 /**
  * Effective aspect ratio of the fin.
  *
- * The geometric aspect ratio is 0.90. The fuselage below the fin and the
- * tailplane across its root both act as end plates and roughly halve the tip
- * loss, so the effective value is about 1.5 times the geometric one. Source:
- * USAF DATCOM, fin end plate effect. Confidence: estimate.
+ * The geometric aspect ratio is 1.08. The fuselage below the fin and the
+ * tailplane across its root both act as end plates, and DATCOM fits both
+ * effects against measured aircraft:
+ *
+ *   A_eff = [A_v(B) / A_v] * A_v * (1 + K_H * (A_v(HB) / A_v(B) - 1))
+ *
+ * The first factor reads against the fin span over the body depth at the fin,
+ * 2.00 / 1.11 = 1.80, and gives 1.65. The tailplane sits at 10 percent of the
+ * fin span above the fin root, which the chart treats as the root, so
+ * A_v(HB) / A_v(B) is 1.10. K_H reads against the gross tailplane area over the
+ * fin area, 5.95 / 3.70 = 1.61, and gives 1.08. The product is 1.97.
+ *
+ * The Helmbold form at this effective aspect ratio and at the 22.7 degree half
+ * chord sweep gives a fin lift curve slope of 2.56 per radian. The assembled
+ * model measures 2.9 per radian, because the model closes the induced angle
+ * with an Oswald efficiency of 0.85 instead of the Helmbold denominator. The
+ * two agree to 13 percent, which is inside the spread of the DATCOM fits.
+ *
+ * Source: USAF DATCOM 5.3.1.1, figures 7.5, 7.6 and 7.7 as fitted in Mason,
+ * "Stability and Control Derivative Estimation and Engine-Out Analysis".
+ * Confidence: derived.
  */
-const FIN_ASPECT_RATIO = 1.5;
+const FIN_ASPECT_RATIO = 1.97;
 const FIN_OSWALD = 0.85;
 
 // --- Nacelles -----------------------------------------------------------------
@@ -767,8 +832,17 @@ export function horizontalTailVolume(): number {
 /**
  * Vertical tail volume coefficient, V_v = l_v S_v / (S b).
  *
- * The value comes out near 0.032, which sits in the 0.03 to 0.05 band of a
- * fighter with two wing mounted engines to hold on one engine.
+ * The value comes out near 0.040. Read it with care, because the published
+ * bands use a different reference. Raymer and Roskam quote 0.04 to 0.07 for a
+ * fighter with the fin area carried to the FUSELAGE CENTER LINE. The fin here
+ * starts at its root, 0.44 m above the center line, so the same aircraft
+ * reports 0.040 on this convention and 0.049 on theirs.
+ *
+ * The arm is short for a fighter. l_v / b is 0.23 against 0.42 for a Mustang,
+ * because the two engines hang on the wing and pull the center of gravity to
+ * 54 percent of the fuselage length instead of 45 percent. The Me 262 pays for
+ * its engine layout with a short fin arm, and its yaw stiffness sits at the low
+ * end of the fighter band because of it. See the report of bead b49.
  */
 export function verticalTailVolume(): number {
   const surfaces = me262Surfaces();

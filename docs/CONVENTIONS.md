@@ -343,7 +343,7 @@ how you estimated it.
 | Wing area | 21.7 m2 | firm |
 | Aspect ratio | 7.21 | derived |
 | Length | 10.60 m | firm |
-| Height | 3.50 m | firm |
+| Height | 3.83 m | firm, corrected, see note |
 | Sweep at quarter chord | 18.5 deg | firm |
 | Root airfoil | NACA 00011-0.825-35 | firm |
 | Tip airfoil | NACA 00009-1.1-40 | firm |
@@ -368,6 +368,27 @@ how you estimated it.
 | Inertia tensor | see src/aircraft/me262/mass.ts | estimated, validated against the P-51D |
 | Load factor limit | +7 g and -3 g | estimated |
 | Armament | 4 x MK 108, 30 mm | firm |
+
+### Note on the height, and a warning about this table
+
+This table first gave the height as 3.50 m and marked it firm. That was WRONG.
+The National Air and Space Museum gives 12 ft 7 in, which is 3.84 m, for the
+A-1a airframe it holds. Three other sources give 3.8 m to 3.84 m.
+
+The error did real damage before anyone found it. The render model back-solved
+the fin span from the height, so the fin came out at 1.67 m instead of 2.00 m.
+The small fin then gave the aircraft almost no directional stability. One agent
+even adjusted its fin estimate to match the 3.50 m figure, which is the correct
+method used on a bad input.
+
+Two unrelated facts caught it. First, the fin span from a three-view disagreed.
+Second, full rudder could not hold one dead engine below 373 km/h. The pilot
+notes warn against single-engine flight below 300 km/h. With the correct fin
+the aircraft holds down to 305 km/h.
+
+The lesson for this table: a confidence mark is only as good as its source. If
+a number here fights a measurement, check the number before you change the
+model.
 
 ### Note on the stall speed
 
