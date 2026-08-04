@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "henri_flight_sim",
+  "project_id": "3158de41-c250-42ea-87c9-714f1fdf006a"
+}
