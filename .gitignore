@@ -1,3 +1,12 @@
+node_modules/
+dist/
+*.local
+.DS_Store
+tools/out/
+
+# Generated tool output, not source
+graphify-out/
+.claude/scheduled_tasks.lock
 
 # Beads / Dolt files (added by bd init)
 .dolt/

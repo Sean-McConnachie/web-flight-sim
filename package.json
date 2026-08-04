@@ -1,0 +1,28 @@
+{
+  "name": "henri-flight-sim",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Me-262 flight simulator with component based aerodynamics",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:flight": "vitest run test/flight",
+    "test:watch": "vitest",
+    "lint:ste": "node tools/ste-lint.mjs docs README.md"
+  },
+  "dependencies": {
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/three": "0.185.0",
+    "typescript": "5.9.3",
+    "vite": "8.2.0",
+    "vitest": "4.1.10"
+  }
+}
