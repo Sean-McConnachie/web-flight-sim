@@ -528,6 +528,7 @@ describe('the linear load estimate', () => {
       RHO,
       SPEED_OF_SOUND,
       NO_CONTROLS,
+      s.state.stall.f,
       load,
     );
     const lift = s.result.dynamicPressure * 1.735 * s.result.cl;
@@ -547,6 +548,7 @@ describe('the linear load estimate', () => {
       RHO,
       SPEED_OF_SOUND,
       NO_CONTROLS,
+      s.state.stall.f,
       load,
     );
     const attachedSlope = load.slope;
@@ -559,6 +561,7 @@ describe('the linear load estimate', () => {
       RHO,
       SPEED_OF_SOUND,
       NO_CONTROLS,
+      s.state.stall.f,
       load,
     );
     expect(load.slope).toBeLessThan(0.5 * attachedSlope);

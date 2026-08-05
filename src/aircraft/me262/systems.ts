@@ -61,6 +61,7 @@
 
 import { clamp, smoothstep } from '@/math/tables';
 import { DEG, kmhToMs } from '@/math/units';
+import { MAX_BRAKE_TORQUE } from '@/physics/gear';
 import {
   CONTROL_INDEX,
   FLAP_LANDING_ANGLE,
@@ -207,13 +208,14 @@ export const SLAT_TRAVEL_TIME = 0.5; // s
 /**
  * Largest braking torque of one main wheel.
  *
- * The pilot notes require the brakes to hold the aircraft against both engines
- * at 8500 rpm, which is about 15 kN of thrust. Two main wheels of 0.42 m rolling
- * radius need 3150 N m each to do that. The model carries 4500 N m, which leaves
- * the margin a serviceable brake had.
- * Source: Wendel notes, paragraph 2. Confidence: estimate.
+ * THIS MODULE DOES NOT OWN THE NUMBER. src/physics/gear.ts owns it, because
+ * that is the file where the torque meets the tire and becomes a force. This
+ * module only reports the torque to the gauge and works out the heat, so a
+ * second value here could only ever be wrong. It held one, 4500 N m against the
+ * 12000 N m of gear.ts, and the gauge read a brake the aircraft did not have.
+ * The name stays, because the gauge and the tests already use it.
  */
-export const BRAKE_TORQUE_MAX = 4500; // N m
+export const BRAKE_TORQUE_MAX = MAX_BRAKE_TORQUE; // N m
 
 /** Rolling radius of the main wheel, 840 by 300 mm tire. Confidence: firm. */
 export const WHEEL_RADIUS = 0.42; // m

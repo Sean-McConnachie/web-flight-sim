@@ -115,6 +115,16 @@
  * period and it changes no steady result. A caller that runs one evaluation per
  * step, such as a frequency response test, can turn it on.
  *
+ * THE LAG USES THE EXACT SOLUTION OF THE FIRST ORDER SYSTEM, 1 - exp(-dt / T).
+ * The earlier form dt / (T + dt) is the bilinear approximation. It NEVER reaches
+ * one at any finite dt, so a caller that asked for a steady answer with a large
+ * dt still carried a part of the call before it: at dt = 5 s and a wake travel of
+ * 0.07 s the old form kept 1.4 percent of the last value. The exact form reaches
+ * one to machine precision above about 40 travel times, and it reaches it exactly
+ * at dt = Infinity, which is how assembly.evaluateSteady asks for the steady
+ * answer. src/physics/aero/stall.ts already used the exact form. The two lags of
+ * the model now agree.
+ *
  * This module is pure physics. It imports no Three.js class at all.
  */
 
@@ -345,7 +355,8 @@ export function updateDownwash(
 
   if (p.useLag && speed > MIN_LAG_SPEED && dt > 0) {
     const travel = p.tailArm / speed;
-    s.laggedEpsilon += ((steady - s.laggedEpsilon) * dt) / (travel + dt);
+    // The exact solution of the first order lag over dt. See section 5 above.
+    s.laggedEpsilon += (steady - s.laggedEpsilon) * (travel > 0 ? 1 - Math.exp(-dt / travel) : 1);
   } else {
     s.laggedEpsilon = steady;
   }
@@ -414,18 +425,41 @@ function groupAngle(
   return section - (eta * loadFactor * (total - flowAngle)) / (loadFactor + eta);
 }
 
+/** Puts the model back to the state createDownwash left it in. */
+export function resetDownwash(d: Downwash): void {
+  const p = d.params;
+  const s = d.state;
+  s.epsilon = 0;
+  s.sigma = 0;
+  s.etaTail = p.etaTailClean;
+  s.etaFin = p.etaFin;
+  s.wakeCoverage = 0;
+  s.wakeOffset = p.tailAboveWing;
+  s.tailAngle = 0;
+  s.finAngle = 0;
+  s.laggedEpsilon = 0;
+}
+
 /**
  * Adds the downwash of the tail and the sidewash of the fin into the induced
  * angle array of the assembly, and fills the state.
  *
  * The two angles add, because surface.ts takes one angle off the local flow of
- * the strip. The function reads the wing lift and the wing separation out of the
- * strips the assembly already solved, so the caller passes no lift of its own.
- * It allocates nothing.
+ * the strip. The function reads the wing lift out of the induced angle the
+ * assembly already solved, so the caller passes no lift of its own. It allocates
+ * nothing.
+ *
+ * `separation` holds the separation point of every strip, in the order of
+ * `surfaces`. IT IS AN ARGUMENT AND NOT A READ OF Surface.state. The thickness of
+ * the wake follows the separation state of the wing, and the assembly must be
+ * able to hand over the value that the SAME evaluation will use. A read of
+ * Surface.state here would take the value that the evaluation BEFORE this one
+ * left behind, which is the b61 defect. See the module comment of assembly.ts.
  */
 export function applyDownwash(
   d: Downwash,
   surfaces: readonly Surface[],
+  separation: Float64Array,
   inducedAngles: Float64Array,
   alpha: number,
   beta: number,
@@ -445,17 +479,17 @@ export function applyDownwash(
   const wingLift = wingCl * dynamicPressure * p.wingArea;
 
   let area = 0;
-  let separation = 0;
+  let wingSeparation = 0;
   for (const index of p.wingIndices) {
     const stripArea = surfaces[index].def.area;
     area += stripArea;
-    separation += stripArea * surfaces[index].state.stall.f;
+    wingSeparation += stripArea * separation[index];
   }
 
   updateDownwash(
     d,
     wingLift,
-    area > 0 ? separation / area : 1,
+    area > 0 ? wingSeparation / area : 1,
     alpha,
     beta,
     speed,

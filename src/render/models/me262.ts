@@ -138,6 +138,34 @@
  * each door pivot toward ME262_POSE.gearDoorOpen and back to zero.
  *
  *
+ * 4a. THE SLIDING GEAR LEG
+ *
+ * A pivot cannot show an oleo stroke, because a pivot only turns. Each leg
+ * therefore carries one more part: a SLIDER. The slider is a plain Object3D
+ * between the leg pivot and the moving half of the leg, and it holds a
+ * position instead of a turn.
+ *
+ * Each leg splits into two members. The outer member is the gas cylinder. It
+ * hangs from the leg pivot and it never moves. The inner member is the piston.
+ * It hangs from the slider, together with the torque link and the wheel pivot,
+ * so the axle always stays on the end of the piston. The cylinder is wider
+ * than the piston and it is long enough to hide the head of the piston over
+ * the whole stroke.
+ *
+ * `setGearCompression` drives the three sliders. Its argument is the STRUT
+ * STROKE of GearLegState.compression of src/physics/gear.ts, in meters, and
+ * zero is full extension. The slider runs along the leg axis, and the distance
+ * is scaled so that the axle rises by exactly one meter for each meter of
+ * stroke. The strut of the model rakes a few degrees and the strut of the
+ * physics stands on the body z axis, so only that scale keeps the wheel of the
+ * model on the wheel of the physics.
+ *
+ * The model is DRAWN at the static stroke of 0.154 m, which is where the
+ * aircraft stands at rest at the design mass. `reset` therefore writes that
+ * value and not zero, because the aircraft spawns parked and sitting on its
+ * gear. Every wheel then touches the ground line at y = -1.33.
+ *
+ *
  * 5. REFERENCE DATA
  *
  * Every dimension comes from docs/CONVENTIONS.md section 8, confidence firm,
@@ -159,7 +187,7 @@ import {
   Vector3,
 } from 'three/webgpu';
 
-import { lerp } from '@/math/tables';
+import { clamp, lerp } from '@/math/tables';
 import { DEG } from '@/math/units';
 
 import type { ModelMaterialSet } from './materials';
@@ -199,7 +227,13 @@ export interface Me262Pivots {
 export interface Me262Model {
   root: Object3D;
   pivots: Me262Pivots;
-  /** Sets every control to its neutral position. */
+  /**
+   * Sets the oleo stroke of the three legs, in meters. Zero is full extension
+   * and ME262_GEAR_TRAVEL is the hard stop. Each value clamps to that band.
+   * Read section 4a of the module comment.
+   */
+  setGearCompression(nose: number, left: number, right: number): void;
+  /** Sets every control to its neutral position, and the gear to its rest. */
   reset(): void;
   dispose(): void;
 }
@@ -728,26 +762,40 @@ const WING_STATIONS: SurfaceStation[] = [
 ];
 
 /**
- * The fin root sits at y = 0.50, inside the fuselage. The tip sits at y = 2.17,
- * which puts the highest point of the model 3.50 m above the ground line at
- * y = -1.33. That matches the firm height in CONVENTIONS section 8.
+ * Fin root height above the model x z plane, and fin span from that root to the
+ * tip, in m.
  *
- * The fin chords, the fin sweep, and the fin height are all estimates from a
- * three view. The height of 3.50 m is firm. A first pass gave 3.48 m, so the
- * span of the fin moved from 1.65 m to 1.67 m. That change tunes an estimate
- * against a firm number, which is the right direction. It does not bend a known
- * value to reach a round one.
+ * The root sits at y = 0.50, inside the fuselage. A span of 2.00 m puts the tip
+ * at y = 2.50, which is 3.83 m above the ground line at y = -1.33.
+ *
+ * THIS FILE ONCE DREW A FIN OF 1.67 m. It back-solved that span from an overall
+ * height of 3.50 m, which CONVENTIONS section 8 then gave and marked firm. The
+ * height was wrong. The National Air and Space Museum gives 12 ft 7 in, that is
+ * 3.84 m, for the A-1a airframe it holds, and three other sources give 3.8 m to
+ * 3.84 m. Section 8 now carries 3.83 m and a note on the error. The method was
+ * right and the input was wrong, so the span follows the corrected input.
+ *
+ * src/aircraft/me262/geometry.ts flies the same fin, with FIN_SPAN = 2.00 m and
+ * an effective aspect ratio of 1.97. The two files now agree.
+ */
+const FIN_ROOT_Y = 0.5;
+const FIN_SPAN = 2.0;
+
+/**
+ * The fin chords and the fin sweep are estimates from a three view. They do not
+ * change with the span. The chords give a fin area of 3.70 m2 over the 2.00 m
+ * span, which is the area the DATCOM fit of src/aircraft/me262/geometry.ts
+ * reads against. The quarter chord sweeps 30.7 deg and the leading edge 37.6
+ * deg.
  */
 const FIN: SurfacePlan = {
-  rootQuarter: new Vector3(0, 0.5, aft(8.1175)),
+  rootQuarter: new Vector3(0, FIN_ROOT_Y, aft(8.1175)),
   spanAxis: new Vector3(0, 1, 0),
   chordAxis: new Vector3(0, 0, 1),
   normalAxis: new Vector3(1, 0, 0),
   rootChord: 2.55,
   tipChord: 1.15,
-  spanLength: 1.67,
-  // The fin quarter chord sweeps about 31 deg and the leading edge about 39
-  // deg. Both values come from a three view, confidence estimate.
+  spanLength: FIN_SPAN,
   sweepTangent: 0.594,
   riseTangent: 0,
   riseStart: 0,
@@ -757,25 +805,42 @@ const FIN: SurfacePlan = {
   tipIncidence: 0,
 };
 
+/** Span of the rounded tip cap above the top of the rudder, in m. */
+const FIN_TIP_CAP = 0.15;
+
 /**
  * Chord fraction of the rudder hinge line, and the span it covers. The span
- * runs from the fin root, so 0.25 is 0.25 m above y = 0.50.
+ * runs from the fin root, so 0.25 is 0.25 m above y = 0.50. The rudder stops
+ * FIN_TIP_CAP below the tip, where the cap starts. RUDDER_SPAN of
+ * src/aircraft/me262/geometry.ts holds the same two numbers.
  */
 const RUDDER_HINGE = 0.62;
-const RUDDER_SPAN = [0.25, 1.52] as const;
+const RUDDER_SPAN = [0.25, FIN_SPAN - FIN_TIP_CAP] as const;
 
+/**
+ * Station list of the fin. The last three stations shrink the section and round
+ * the tip over the 0.15 m of the cap.
+ */
 const FIN_STATIONS: SurfaceStation[] = [
   { span: 0, front: 0, back: 1 },
   { span: RUDDER_SPAN[0] - 0.04, front: 0, back: 1 },
   { span: RUDDER_SPAN[0], front: 0, back: RUDDER_HINGE },
   { span: RUDDER_SPAN[1], front: 0, back: RUDDER_HINGE },
-  { span: 1.58, front: 0, back: 1 },
-  { span: 1.63, front: 0, back: 1, scale: 0.68 },
-  { span: 1.67, front: 0, back: 1, scale: 0.24 },
+  { span: FIN_SPAN - 0.09, front: 0, back: 1 },
+  { span: FIN_SPAN - 0.04, front: 0, back: 1, scale: 0.68 },
+  { span: FIN_SPAN, front: 0, back: 1, scale: 0.24 },
 ];
 
+/**
+ * The tailplane sits 0.20 m above the fin root, which is 10 percent of the fin
+ * span. src/aircraft/me262/geometry.ts reads that same 10 percent into the
+ * DATCOM end plate fit that gives the fin its effective aspect ratio, so the
+ * mount stays where it is while the fin grows.
+ */
+const TAILPLANE_ROOT_Y = FIN_ROOT_Y + 0.2;
+
 const TAILPLANE_RIGHT: SurfacePlan = {
-  rootQuarter: new Vector3(0, 0.7, aft(8.905)),
+  rootQuarter: new Vector3(0, TAILPLANE_ROOT_Y, aft(8.905)),
   spanAxis: new Vector3(1, 0, 0),
   chordAxis: new Vector3(0, 0, 1),
   normalAxis: new Vector3(0, 1, 0),
@@ -1064,6 +1129,107 @@ const MAIN_AXLE = new Vector3(1.18, -0.91, 0.32);
 const MAIN_WHEEL_RADIUS = 0.42;
 const MAIN_WHEEL_HALF_WIDTH = 0.14;
 
+/**
+ * Full oleo stroke of every leg, in m.
+ *
+ * DUPLICATED from NOSE_TRAVEL and MAIN_TRAVEL of src/physics/gear.ts, which
+ * both hold 0.28 m. CONVENTIONS section 4 stops the physics from importing the
+ * renderer and it stops this file from importing the physics, so the number
+ * appears in both places. The two must stay equal, or the model shows a stroke
+ * the aircraft does not have.
+ */
+export const ME262_GEAR_TRAVEL = 0.28;
+
+/**
+ * Oleo stroke at which the model is drawn, in m.
+ *
+ * STATIC_STROKE_FRACTION of src/physics/gear.ts is 0.55, so a parked aircraft
+ * at the design mass of 6396 kg stands at 0.55 * 0.28 = 0.154 m of stroke on
+ * all three legs. The wheels of the model touch GROUND_Y at that value, so this
+ * is the value `reset` writes.
+ */
+export const ME262_GEAR_STATIC_COMPRESSION = 0.55 * ME262_GEAR_TRAVEL;
+
+/**
+ * Length of the gas cylinder of each leg, and the depth of the head of the
+ * piston inside it at the static stroke. Both run down the leg axis from the
+ * trunnion, in m.
+ *
+ * THE TIRE SETS THESE VALUES, NOT THE STRUT. A main leg is 0.796 m long and its
+ * tire is 0.84 m across, so the tire hides everything below y = -0.49 and only
+ * 0.35 m of leg shows at rest. The cylinder must therefore end high, or no part
+ * of the piston ever shows.
+ *
+ * Three limits fight over the pair:
+ *
+ *   The cylinder must end above the top of the tire, or the split never shows.
+ *   The head of the piston must stay inside the cylinder at full extension.
+ *   The head must stay under the skin at the hard stop.
+ *
+ * The values below hold all three. At full extension the main piston keeps
+ * 0.026 m of engagement and the nose piston keeps 0.025 m. At the hard stop the
+ * main head stands 0.015 m above its trunnion, which the wing lower skin
+ * covers, and the nose head stands 0.007 m above its trunnion, which sits well
+ * inside the fuselage.
+ *
+ * The 0.28 m stroke is 48 percent of the length of the nose leg, so the nose
+ * piston only leaves its cylinder once the wheel comes off the ground. On the
+ * ground the nose stroke reads as the wheel rising into the belly, which is the
+ * larger cue in any case.
+ */
+const NOSE_CYLINDER_LENGTH = 0.3;
+const NOSE_PISTON_HEAD = 0.12;
+const MAIN_CYLINDER_LENGTH = 0.3;
+const MAIN_PISTON_HEAD = 0.115;
+
+/**
+ * The moving half of one landing gear leg.
+ *
+ * `node` carries the piston, the torque link and the wheel pivot. Its position
+ * runs along `axis`, which is the leg axis written in the local frame of the
+ * leg pivot and points from the axle toward the trunnion. `scale` turns a
+ * vertical stroke into a distance along that axis.
+ */
+interface GearSlider {
+  node: Object3D;
+  axis: Vector3;
+  scale: number;
+}
+
+/**
+ * Build the slider of one leg. `trunnion` and `axle` are model points, and the
+ * leg runs between them.
+ */
+function makeSlider(leg: Object3D, trunnion: Vector3, axle: Vector3): GearSlider {
+  const up = new Vector3().subVectors(trunnion, axle).normalize();
+  leg.updateWorldMatrix(true, false);
+  // transformDirection drops the translation and normalizes, so this is the
+  // same direction written in the frame of the leg pivot.
+  const axis = up
+    .clone()
+    .transformDirection(new Matrix4().copy(leg.matrixWorld).invert());
+
+  const node = new Object3D();
+  node.name = `${leg.name}-slider`;
+  leg.add(node);
+  // A leg that rakes must slide further along its own axis than the wheel
+  // rises, or the model shows less stroke than the physics computes.
+  return { node, axis, scale: 1 / up.y };
+}
+
+/** Place one slider at a strut stroke, in m. */
+function setSlider(slider: GearSlider, compression: number): void {
+  const stroke =
+    clamp(compression, 0, ME262_GEAR_TRAVEL) - ME262_GEAR_STATIC_COMPRESSION;
+  slider.node.position.copy(slider.axis).multiplyScalar(stroke * slider.scale);
+}
+
+/** A point on the leg axis, `distance` meters below the trunnion. */
+function alongLeg(trunnion: Vector3, axle: Vector3, distance: number): Vector3 {
+  const down = new Vector3().subVectors(axle, trunnion).normalize();
+  return new Vector3().copy(trunnion).addScaledVector(down, distance);
+}
+
 /** Build a wheel about the model x axis, centered on `axle`. */
 function wheelGeometry(radius: number, halfWidth: number, hubRadius: number): BufferGeometry {
   const contour: Vector2[] = [
@@ -1087,10 +1253,18 @@ function wheelGeometry(radius: number, halfWidth: number, hubRadius: number): Bu
 // Build context
 // ---------------------------------------------------------------------------
 
+/** The moving half of the three legs. `setGearCompression` drives all three. */
+interface GearSliders {
+  nose: GearSlider;
+  left: GearSlider;
+  right: GearSlider;
+}
+
 interface BuildContext {
   root: Object3D;
   materials: ModelMaterialSet;
   geometries: BufferGeometry[];
+  sliders: Partial<GearSliders>;
 }
 
 interface AttachOptions {
@@ -1540,14 +1714,54 @@ function buildNoseGear(context: BuildContext, pivots: Partial<Me262Pivots>): voi
     new Vector3(1, 0, 0),
     new Vector3(0, 1, 0),
   );
-  attach(context, leg, rod(NOSE_TRUNNION, NOSE_AXLE, 0.058, 0.046), context.materials.bareMetal, 'nose-strut');
+  // The gas cylinder hangs from the trunnion and it never moves. A gland at its
+  // lower end marks where the piston leaves it.
+  const cylinderEnd = alongLeg(NOSE_TRUNNION, NOSE_AXLE, NOSE_CYLINDER_LENGTH);
+  attach(
+    context,
+    leg,
+    rod(NOSE_TRUNNION, cylinderEnd, 0.06, 0.055),
+    context.materials.bareMetal,
+    'nose-cylinder',
+  );
+  attach(
+    context,
+    leg,
+    rod(
+      alongLeg(NOSE_TRUNNION, NOSE_AXLE, NOSE_CYLINDER_LENGTH - 0.035),
+      cylinderEnd,
+      0.068,
+      0.068,
+    ),
+    context.materials.darkMetal,
+    'nose-gland',
+  );
 
-  // A short scissor link on the front of the leg.
+  // Everything below hangs from the slider, so the whole lower leg shortens.
+  const slider = makeSlider(leg, NOSE_TRUNNION, NOSE_AXLE);
+  const pistonHead = alongLeg(NOSE_TRUNNION, NOSE_AXLE, NOSE_PISTON_HEAD);
+  attach(
+    context,
+    slider.node,
+    rod(pistonHead, NOSE_AXLE, 0.042, 0.042),
+    context.materials.bareMetal,
+    'nose-piston',
+  );
+
+  // A short torque link on the front of the leg. It rides on the piston, and it
+  // still reaches the cylinder at full extension.
+  const linkCenter = alongLeg(NOSE_TRUNNION, NOSE_AXLE, 0.145 + 0.17);
   const link = new BoxGeometry(0.02, 0.34, 0.05);
-  link.translate(0, NOSE_TRUNNION.y - 0.22, NOSE_AXLE.z - 0.075);
-  attach(context, leg, link, context.materials.bareMetal, 'nose-scissor');
+  link.translate(0, linkCenter.y, NOSE_AXLE.z - 0.075);
+  attach(context, slider.node, link, context.materials.bareMetal, 'nose-scissor');
 
-  const wheel = makePivot(leg, 'wheelNose', NOSE_AXLE, new Vector3(-1, 0, 0), new Vector3(0, 1, 0));
+  const wheel = makePivot(
+    slider.node,
+    'wheelNose',
+    NOSE_AXLE,
+    new Vector3(-1, 0, 0),
+    new Vector3(0, 1, 0),
+  );
   const tire = wheelGeometry(NOSE_WHEEL_RADIUS, NOSE_WHEEL_HALF_WIDTH, 0.09);
   tire.translate(NOSE_AXLE.x, NOSE_AXLE.y, NOSE_AXLE.z);
   attach(context, wheel, tire, context.materials.rubber, 'nose-wheel');
@@ -1568,6 +1782,7 @@ function buildNoseGear(context: BuildContext, pivots: Partial<Me262Pivots>): voi
   pivots.gearNose = leg;
   pivots.wheelNose = wheel;
   pivots.gearDoorNose = door;
+  context.sliders.nose = slider;
 }
 
 function buildMainGear(context: BuildContext, side: 1 | -1, pivots: Partial<Me262Pivots>): void {
@@ -1585,18 +1800,47 @@ function buildMainGear(context: BuildContext, side: 1 | -1, pivots: Partial<Me26
     new Vector3(0, 0, -side),
     new Vector3(0, 1, 0),
   );
-  attach(context, leg, rod(trunnion, axle, 0.08, 0.062), context.materials.bareMetal, `main-strut-${label}`);
+  // The gas cylinder hangs from the trunnion and it never moves. A gland at its
+  // lower end marks where the piston leaves it, and the side brace lands just
+  // above that gland.
+  const cylinderEnd = alongLeg(trunnion, axle, MAIN_CYLINDER_LENGTH);
+  attach(
+    context,
+    leg,
+    rod(trunnion, cylinderEnd, 0.082, 0.074),
+    context.materials.bareMetal,
+    `main-cylinder-${label}`,
+  );
+  attach(
+    context,
+    leg,
+    rod(alongLeg(trunnion, axle, MAIN_CYLINDER_LENGTH - 0.04), cylinderEnd, 0.092, 0.092),
+    context.materials.darkMetal,
+    `main-gland-${label}`,
+  );
 
   const brace = rod(
     new Vector3(side * 0.72, -0.09, MAIN_TRUNNION.z),
-    new Vector3(side * 1.14, -0.58, MAIN_TRUNNION.z - 0.12),
+    new Vector3(side * 1.13, -0.4, MAIN_TRUNNION.z - 0.09),
     0.035,
     0.03,
   );
   attach(context, leg, brace, context.materials.bareMetal, `main-brace-${label}`);
 
+  // The piston and the wheel hang from the slider, so the leg shortens under
+  // load and the axle stays on the end of the piston.
+  const slider = makeSlider(leg, trunnion, axle);
+  const pistonHead = alongLeg(trunnion, axle, MAIN_PISTON_HEAD);
+  attach(
+    context,
+    slider.node,
+    rod(pistonHead, axle, 0.058, 0.058),
+    context.materials.bareMetal,
+    `main-piston-${label}`,
+  );
+
   const wheel = makePivot(
-    leg,
+    slider.node,
     side === 1 ? 'wheelRight' : 'wheelLeft',
     axle,
     new Vector3(-1, 0, 0),
@@ -1625,10 +1869,12 @@ function buildMainGear(context: BuildContext, side: 1 | -1, pivots: Partial<Me26
     pivots.gearRight = leg;
     pivots.wheelRight = wheel;
     pivots.gearDoorRight = door;
+    context.sliders.right = slider;
   } else {
     pivots.gearLeft = leg;
     pivots.wheelLeft = wheel;
     pivots.gearDoorLeft = door;
+    context.sliders.left = slider;
   }
 }
 
@@ -1665,7 +1911,7 @@ export function createMe262Model(): Me262Model {
   root.name = 'me262';
 
   const materials = createModelMaterialSet();
-  const context: BuildContext = { root, materials, geometries: [] };
+  const context: BuildContext = { root, materials, geometries: [], sliders: {} };
   const pivots: Partial<Me262Pivots> = {};
 
   buildFuselage(context);
@@ -1682,6 +1928,13 @@ export function createMe262Model(): Me262Model {
   buildAerials(context);
 
   const complete = pivots as Me262Pivots;
+  const sliders = context.sliders as GearSliders;
+
+  function setGearCompression(nose: number, left: number, right: number): void {
+    setSlider(sliders.nose, nose);
+    setSlider(sliders.left, left);
+    setSlider(sliders.right, right);
+  }
 
   function reset(): void {
     // Neutral is zero on every pivot, with no exception. That gives the spawn
@@ -1689,6 +1942,13 @@ export function createMe262Model(): Me262Model {
     // down and locked, gear doors closed and flush, and the hood closed.
     // A gear cycle drives the doors through ME262_POSE.gearDoorOpen.
     for (const pivot of Object.values(complete)) pivot.rotation.set(0, 0, 0);
+    // The gear is the one part that does not rest at zero. The aircraft spawns
+    // parked, so all three legs carry their share of the weight.
+    setGearCompression(
+      ME262_GEAR_STATIC_COMPRESSION,
+      ME262_GEAR_STATIC_COMPRESSION,
+      ME262_GEAR_STATIC_COMPRESSION,
+    );
   }
 
   function dispose(): void {
@@ -1700,14 +1960,15 @@ export function createMe262Model(): Me262Model {
 
   reset();
 
-  return { root, pivots: complete, reset, dispose };
+  return { root, pivots: complete, setGearCompression, reset, dispose };
 }
 
 /**
  * Height of the ground line below the model origin, in m. A ground handling
  * module can place the model with `position.y = -GROUND_Y` to stand it on a
- * flat surface. The value follows from the wheel radii and the leg lengths, and
- * it puts the fin tip 3.50 m above the ground, which matches the firm height.
+ * flat surface. The value follows from the wheel radii and the leg lengths at
+ * the static stroke, and it puts the fin tip 3.83 m above the ground, which
+ * matches the corrected height of CONVENTIONS section 8.
  */
 export const ME262_GROUND_CLEARANCE = -GROUND_Y;
 

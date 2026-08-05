@@ -3,6 +3,7 @@ import { Matrix3, Vector3 } from 'three';
 
 import { G0, toRad } from '@/math/units';
 import {
+  MAX_BRAKE_TORQUE,
   ME262_NOSE_LOAD_FRACTION,
   ME262_STATIC_CG_HEIGHT,
   NOSE_STEER_LIMIT,
@@ -460,7 +461,19 @@ describe('tire friction', () => {
       }
       return { distance: state.position.x - start, worstSlip };
     }
-    const firm = stop(0.8);
+    // THE FIRM PEDAL FOLLOWS THE BRAKE CONSTANT. MAX_BRAKE_TORQUE is sized so
+    // that a full pedal reaches the peak of the tire curve at the static load
+    // and locks the wheel just past it, so the pedal that holds the peak is a
+    // property of that constant and not a number a test may guess. Below is the
+    // pedal that would exactly reach the peak, and the firm application sits one
+    // percent under it. A hard coded fraction went stale the last time the
+    // constant moved.
+    const mainStaticLoad = 0.5 * (1 - ME262_NOSE_LOAD_FRACTION) * WEIGHT;
+    const lockPedal =
+      (tireLongitudinalMu(TIRE_PEAK_SLIP_RATIO) * mainStaticLoad * LEGS[MAIN_LEFT].wheelRadius) /
+      MAX_BRAKE_TORQUE;
+    expect(lockPedal).toBeLessThan(1);
+    const firm = stop(0.99 * lockPedal);
     const full = stop(1);
     // The firm application keeps the wheel turning near the peak of the curve.
     expect(firm.worstSlip).toBeGreaterThan(-0.5);

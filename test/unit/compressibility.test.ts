@@ -65,13 +65,41 @@ describe('the Prandtl-Glauert lift scale', () => {
     expect(out.clScale).toBeGreaterThan(1);
   });
 
-  it('grows with Mach', () => {
+  it('grows with Mach up to the critical Mach number', () => {
     let previous = 0;
-    for (let mach = 0; mach <= 1.0; mach += 0.01) {
+    for (let mach = 0; mach <= CRITICAL_MACH; mach += 0.01) {
       machCorrection(mach, REFERENCE_SWEEP, out);
       expect(out.clScale).toBeGreaterThanOrEqual(previous - 1e-12);
       previous = out.clScale;
     }
+  });
+
+  it('peaks near the critical Mach number and then falls, as the shock takes over', () => {
+    // The Prandtl-Glauert rule is a shock free result. Above the critical Mach
+    // number a shock stands on the section, the pressure behind it stops
+    // answering the angle of attack, and the measured lift curve slope rounds
+    // over and falls. See SLOPE_LOSS_SCALE of compressibility.ts.
+    let peak = 0;
+    let peakMach = 0;
+    for (let mach = 0; mach <= 1.0; mach += 0.005) {
+      machCorrection(mach, REFERENCE_SWEEP, out);
+      if (out.clScale > peak) {
+        peak = out.clScale;
+        peakMach = mach;
+      }
+    }
+    expect(peakMach).toBeGreaterThan(CRITICAL_MACH);
+    expect(peakMach).toBeLessThan(TUCK_ONSET_MACH + 0.03);
+    machCorrection(1.0, REFERENCE_SWEEP, out);
+    expect(out.clScale).toBeLessThan(0.85 * peak);
+  });
+
+  it('gives a thin section a later peak than a thick one', () => {
+    // The tailplane is 9 percent thick and the wing root is 11 percent. The thin
+    // section meets its shock at a higher Mach number and keeps its slope longer.
+    machCorrection(0.86, REFERENCE_SWEEP, out, 0.09);
+    machCorrection(0.86, REFERENCE_SWEEP, other, 0.11);
+    expect(out.clScale).toBeGreaterThan(other.clScale);
   });
 });
 
@@ -105,20 +133,39 @@ describe('the wave drag rise', () => {
 });
 
 describe('the aerodynamic center shift', () => {
-  it('holds the quarter chord below the tuck onset', () => {
-    for (let mach = 0; mach <= TUCK_ONSET_MACH; mach += 0.005) {
+  it('holds the quarter chord below the critical Mach number', () => {
+    // The load moves when a shock stands on the section, so the shift starts at
+    // the critical Mach number and not at the published tuck onset. The tuck
+    // onset is where the WHOLE AIRCRAFT turns nose down, which comes later.
+    // test/flight/mach.test.ts measures that one.
+    for (let mach = 0; mach <= CRITICAL_MACH; mach += 0.005) {
       machCorrection(mach, REFERENCE_SWEEP, out);
-      expect(out.acShift).toBe(0.25);
+      expect(out.acShift).toBeCloseTo(0.25, 12);
     }
   });
 
-  it('moves back above the tuck onset and reaches 0.45 chord at Mach 0.90', () => {
-    machCorrection(0.84, REFERENCE_SWEEP, out);
-    expect(out.acShift).toBeGreaterThan(0.25);
+  it('has moved a third of the way to mid chord at the published tuck onset', () => {
+    machCorrection(TUCK_ONSET_MACH, REFERENCE_SWEEP, out);
+    expect(out.acShift).toBeGreaterThan(0.33);
+    expect(out.acShift).toBeLessThan(0.47);
+  });
+
+  it('reaches mid chord by the Mach limit and stops there', () => {
+    // A section in fully supersonic flow carries its load at mid chord. The
+    // model does not put the aerodynamic center behind that point at any Mach
+    // number, because no section does.
     machCorrection(MACH_LIMIT, REFERENCE_SWEEP, out);
-    expect(out.acShift).toBeGreaterThan(0.3);
-    machCorrection(0.9, REFERENCE_SWEEP, out);
-    expect(out.acShift).toBeCloseTo(0.45, 6);
+    expect(out.acShift).toBeCloseTo(0.5, 6);
+    for (let mach = MACH_LIMIT; mach <= 1.2; mach += 0.005) {
+      machCorrection(mach, REFERENCE_SWEEP, out);
+      expect(out.acShift).toBeLessThanOrEqual(0.5 + 1e-12);
+    }
+  });
+
+  it('comes later on a thin section than on a thick one', () => {
+    machCorrection(0.84, REFERENCE_SWEEP, out, 0.09);
+    machCorrection(0.84, REFERENCE_SWEEP, other, 0.11);
+    expect(out.acShift).toBeLessThan(other.acShift);
   });
 
   it('grows monotonically with Mach', () => {

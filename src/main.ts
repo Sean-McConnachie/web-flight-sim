@@ -411,6 +411,14 @@ async function main(): Promise<void> {
 
       driveModel(model.pivots, aircraft, wheelAngles, frameDt);
 
+      // The struts telescope. me262GearLegs() orders the legs nose, main left,
+      // main right, which matches the call.
+      model.setGearCompression(
+        aircraft.state.gear.legs[0].compression,
+        aircraft.state.gear.legs[1].compression,
+        aircraft.state.gear.legs[2].compression,
+      );
+
       if (pendingCycleView) {
         pendingCycleView = false;
         rig.cycle();

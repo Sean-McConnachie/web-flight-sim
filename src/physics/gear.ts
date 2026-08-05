@@ -411,12 +411,39 @@ const WHEEL_SPIN_DOWN_TIME = 20; // s
 /**
  * Brake torque of one main wheel at a full command and a cold pack, N m.
  *
- * The wheel must be able to lock. A main leg carries 28.8 kN at rest, so the
- * tire can pass 0.8 * 28.8 = 23.0 kN, which is 9.7 kN m at the 0.42 m radius.
- * The value above that lets the pilot lock the wheel and lose grip, which is the
- * behavior the tire curve exists to show. Confidence: estimate.
+ * ONE FILE HOLDS THIS NUMBER AND IT IS THIS ONE.
+ * src/aircraft/me262/systems.ts carried a second value of 4500 N m for its
+ * gauge and its heat model. That value never reached a wheel, because the
+ * torque that makes a force is the one below, so the two disagreed by a factor
+ * of 2.7 in silence. systems.ts now imports this constant.
+ *
+ * Two bounds fix the value.
+ *
+ * THE LOWER BOUND IS THE RUN UP. The pilot notes ask the brakes to hold the
+ * aircraft against both engines at full power, which is 17.6 kN. Two braked
+ * wheels share it, so each contact patch passes 8.8 kN, and at the 0.42 m
+ * rolling radius that is 3.7 kN m. A brake below that cannot hold the run up.
+ *
+ * THE UPPER BOUND IS THE TIRE. A main leg carries 28.8 kN at rest and
+ * LONG_PEAK_MU is 0.8, so one main tire passes 23.0 kN at the peak of its curve,
+ * which is 9.7 kN m at the same radius. Past that torque the brake beats the
+ * tire and the wheel locks.
+ *
+ * A real aircraft is designed so that the TIRE is the limit and not the brake.
+ * The pilot must be able to lock a wheel, but only just, so that full pedal
+ * reaches the whole of the grip the tire has and no more. The value sits 3.5
+ * percent over the tire bound. It reaches the peak of the tire curve at the
+ * static load, and it locks the wheel at any load below it, which is every part
+ * of a landing roll where the wing still carries weight and where braking has
+ * moved load onto the nose.
+ *
+ * The old 12000 N m sat 24 percent over the tire bound. It made no measured
+ * difference, because both values lock the wheel and a locked tire slides at
+ * whatever the curve gives, but it named a brake that the tire could never use.
+ * Source: Wendel notes, paragraph 2, and ESDU 71025 through LONG_PEAK_MU.
+ * Confidence: estimate.
  */
-const MAX_BRAKE_TORQUE = 12000; // N m
+export const MAX_BRAKE_TORQUE = 10000; // N m
 
 /**
  * Heat capacity of one brake pack, J / K. A steel disc pack and its carrier of
@@ -1199,6 +1226,43 @@ export const ME262_STATIC_CG_HEIGHT = STATIC_CONTACT_DEPTH;
 
 /** Share of the weight the nose leg carries at rest. */
 export const ME262_NOSE_LOAD_FRACTION = NOSE_LOAD_FRACTION;
+
+/**
+ * Drag share of the two main legs, against the nose leg.
+ *
+ * The frontal area of a tire is its diameter times its width. The two 840 x 300
+ * main tires give 0.504 m2 and the 660 x 160 nose tire gives 0.106 m2, so the
+ * mains carry 0.83 of the frontal area of the three wheels. The legs and the
+ * doors follow the same order of size, so one fraction covers the whole
+ * assembly. Confidence: estimate.
+ */
+const MAIN_GEAR_DRAG_SHARE = 0.83;
+
+/** Body z of the top of each leg. buildLeg works out the same value. */
+const MAIN_LEG_TOP_Z = CG_HEIGHT - MAIN_TRUNNION_HEIGHT;
+const NOSE_LEG_TOP_Z = CG_HEIGHT - NOSE_TRUNNION_HEIGHT;
+
+/**
+ * Where the drag of the extended gear acts, body axes, m from the center of
+ * gravity.
+ *
+ * The point is the drag weighted mean of the three legs. Along body x it is the
+ * mean of the two contact patches, because the wheels and the doors sit there.
+ * Along body z it is the mean of the mid height of each leg, because the wheel
+ * sits at the foot of the leg and the strut and the door spread up from it.
+ *
+ * THE HEIGHT IS WHY THIS CONSTANT EXISTS. The gear hangs 0.63 m below the center
+ * of gravity, so its drag makes a NOSE DOWN moment that grows with the square of
+ * the speed. The pilot feels that moment when the gear comes down. A model that
+ * puts the gear drag at the center of gravity shows none of it.
+ * Confidence: estimate.
+ */
+export const ME262_GEAR_DRAG_POSITION = new Vector3(
+  MAIN_GEAR_DRAG_SHARE * MAIN_CONTACT_X + (1 - MAIN_GEAR_DRAG_SHARE) * NOSE_CONTACT_X,
+  0,
+  MAIN_GEAR_DRAG_SHARE * 0.5 * (MAIN_LEG_TOP_Z + STATIC_CONTACT_DEPTH) +
+    (1 - MAIN_GEAR_DRAG_SHARE) * 0.5 * (NOSE_LEG_TOP_Z + STATIC_CONTACT_DEPTH),
+);
 
 // ---------------------------------------------------------------------------
 // The Me 262 airframe contact points

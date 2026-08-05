@@ -100,6 +100,39 @@
  * drag rise Mach number.
  *
  *
+ * THE CENTER OF PRESSURE
+ *
+ * Two effects move the load of a section along its chord, and the Mach tuck of
+ * this aircraft is one of them.
+ *
+ *   The Mach shift. A shock on the upper surface carries the load aft. This is
+ *   the tuck. compressibility.ts reports the new position as acShift, in chord
+ *   fractions from the leading edge.
+ *   The separation shift. A section that sheds its trailing edge flow carries
+ *   its load back toward mid chord. Only the LAG of that move appears here,
+ *   because the static section table already holds the steady part of it.
+ *
+ * THE MODEL MOVES THE POINT THE FORCE ACTS AT. It does not add a couple. The two
+ * are not the same on a swept strip, and the difference is a factor of
+ * cos^2(sweep), which is 0.90 on this wing.
+ *
+ * The reason. Simple sweep theory puts the load of the section a fraction x_cp
+ * of the NORMAL chord behind the leading edge, so the line of the load runs
+ * parallel to the quarter chord line at a perpendicular distance x_cp c_n. Two
+ * parallel lines swept by an angle stand (perpendicular distance / cos sweep)
+ * apart when they are measured STREAMWISE, and c_n / cos(sweep) is the
+ * streamwise chord. The load at one span station therefore sits x_cp of the
+ * STREAMWISE chord behind the leading edge, and the arm about the center of
+ * gravity carries the streamwise chord and no cosine at all.
+ *
+ * A couple about the quarter chord line, built from the normal chord, loses one
+ * cosine to the chord and a second one when its axis is resolved onto the pitch
+ * axis of the aircraft. It also makes a rolling moment that a load moving aft at
+ * a fixed span station does not make. The section moment of the airfoil table is
+ * a true couple and keeps that treatment. The travel of the center of pressure
+ * does not.
+ *
+ *
  * THE INDUCED ANGLE
  *
  * Strip theory with two dimensional section data makes no induced drag and
@@ -231,6 +264,11 @@ export interface SurfaceResult {
   speed: number;
   cl: number;
   cd: number;
+  /**
+   * Pitching moment of the strip about its quarter chord, on the STREAMWISE
+   * chord. It holds the section couple and the travel of the center of pressure.
+   * An unswept strip reports the section value, as it always did.
+   */
   cm: number;
   /** The lagged separation point, 1 attached and 0.04 fully separated. */
   separation: number;
@@ -343,6 +381,7 @@ const stripMoment = new Vector3();
 const bodyForce = new Vector3();
 const bodyMoment = new Vector3();
 const armMoment = new Vector3();
+const cpOffset = new Vector3();
 const coefficients: AeroCoefficients = { cl: 0, cd: 0, cm: 0 };
 const mach: MachCorrection = createMachCorrection();
 
@@ -547,7 +586,7 @@ export function evaluateSurface(
   const beta =
     stripSpeed > MIN_FLOW_SPEED ? Math.asin(clamp(stripVelocity.y / stripSpeed, -1, 1)) : 0;
 
-  machCorrection(machNumber(speed, speedOfSound), def.sweep, mach);
+  machCorrection(machNumber(speed, speedOfSound), def.sweep, mach, def.airfoil.thickness);
 
   // A control and a flap move the zero lift angle of the section. The Mach
   // correction takes their power away as the shock reaches the hinge line.
@@ -627,13 +666,14 @@ export function evaluateSurface(
   const cosFlow = Math.cos(alphaFlow);
   const sinFlow = Math.sin(alphaFlow);
   const cn = cl * cosFlow + cd * sinFlow;
-  // The Mach shift of the aerodynamic center is the tuck. The separation shift
-  // is the unsteady part of the nose down break, and it carries the lag only,
-  // because the static table already holds the steady movement.
-  const cm =
-    coefficients.cm -
-    (mach.acShift - X_AC_ATTACHED) * cn -
-    (separationCenterOfPressure(laggedF) - separationCenterOfPressure(steadyF)) * cn;
+
+  // WHERE THE LOAD ACTS. See the CENTER OF PRESSURE note in the module comment.
+  // The Mach shift is the tuck. The separation shift is the unsteady part of the
+  // nose down break, and it carries the lag only, because the static table
+  // already holds the steady movement.
+  const xCp =
+    mach.acShift + separationCenterOfPressure(laggedF) - separationCenterOfPressure(steadyF);
+  const cpTravel = (xCp - X_AC_ATTACHED) * def.chord; // m, aft of the quarter chord
 
   // The lift acts perpendicular to the flow that reaches the section, which the
   // induced angle has already tilted. The lean of that vector is the induced
@@ -648,9 +688,17 @@ export function evaluateSurface(
 
   // The section moment turns about the quarter chord line. A positive cm is nose
   // up, which is a positive y moment when the sweep and the dihedral are zero.
-  const pitching = q * def.area * g.normalChord * cm;
+  const pitching = q * def.area * g.normalChord * coefficients.cm;
   stripMoment.set(-g.side * g.sinSweep * pitching, g.cosSweep * pitching, 0);
   bodyMoment.copy(stripMoment).applyMatrix3(g.toBody);
+
+  // The travel of the center of pressure. The load leaves the quarter chord and
+  // acts cpTravel meters AFT of it, along the chord line of the strip, which is
+  // the strip x axis. The chordwise part of the force runs along that same line
+  // and therefore adds nothing here, so the whole force may go into the cross
+  // product with no separate normal force term.
+  cpOffset.set(-cpTravel, 0, 0).applyMatrix3(g.toBody);
+  bodyMoment.add(armMoment.crossVectors(cpOffset, bodyForce));
   bodyMoment.add(armMoment.crossVectors(def.position, bodyForce));
 
   out.force.add(bodyForce);
@@ -662,7 +710,11 @@ export function evaluateSurface(
   r.speed = speed;
   r.cl = cl;
   r.cd = cd;
-  r.cm = cm;
+  // The pitching moment of the whole strip about its quarter chord, on the
+  // streamwise chord. The first term is the section couple, which turns about
+  // the quarter chord LINE, so it reaches the pitch axis with one factor of
+  // cos(sweep) and carries the normal chord, which holds a second one.
+  r.cm = (g.cosSweep * g.cosSweep * coefficients.cm) - (xCp - X_AC_ATTACHED) * cn;
   r.separation = laggedF;
   r.slatOpen = slatOpening > 0;
   r.force.copy(bodyForce);
@@ -680,13 +732,21 @@ export function evaluateSurface(
  * assembly sums both terms over a parent surface and solves for the induced
  * angle in closed form. See the comment in assembly.ts for the choice.
  *
- * The estimate uses the Kirchhoff law with the lagged separation point that the
- * strip already holds. In attached flow that is exactly what evaluateSurface
- * produces, because the static table is the same Kirchhoff law and the lagged to
- * steady ratio cancels the steady factor. Above the flat plate blend the
- * estimate runs high, which pushes the induced angle a little high, near one
- * degree at 30 degrees of angle of attack. Linear induced angle theory has no
- * meaning there in any case.
+ * The estimate uses the Kirchhoff law with the separation point THE CALLER
+ * PASSES. In attached flow that is exactly what evaluateSurface produces,
+ * because the static table is the same Kirchhoff law and the lagged to steady
+ * ratio cancels the steady factor. Above the flat plate blend the estimate runs
+ * high, which pushes the induced angle a little high, near one degree at 30
+ * degrees of angle of attack. Linear induced angle theory has no meaning there
+ * in any case.
+ *
+ * WHY THE SEPARATION POINT IS AN ARGUMENT. It used to read s.state.stall.f,
+ * which is the value the PREVIOUS call of evaluateSurface left behind. The
+ * induced angle solve of assembly.ts then depended on what ran before it and not
+ * on the state it received, and near the stall the same state gave two answers
+ * that differed by a factor of four. That was bead b61. The assembly now hands
+ * over the separation point that its own full pass will use, and it iterates the
+ * pair to their common fixed point. See the module comment of assembly.ts.
  */
 export function estimateSurfaceLoad(
   s: Surface,
@@ -696,6 +756,7 @@ export function estimateSurfaceLoad(
   density: number,
   speedOfSound: number,
   controls: Float64Array,
+  separation: number,
   out: SurfaceLoad,
 ): void {
   const def = s.def;
@@ -707,7 +768,7 @@ export function estimateSurfaceLoad(
   const w = stripVelocity.z;
   const q = 0.5 * density * (un * un + w * w);
 
-  machCorrection(machNumber(speed, speedOfSound), def.sweep, mach);
+  machCorrection(machNumber(speed, speedOfSound), def.sweep, mach, def.airfoil.thickness);
 
   // The two flap peak fields do not appear here. Both act on the peak of the
   // section and both are zero while the flow is attached, and this estimate is
@@ -723,7 +784,7 @@ export function estimateSurfaceLoad(
   // The same MIN_FLOW_SPEED rule that evaluateSurface follows. One rule, one
   // answer: the estimate must agree with the evaluation it is an estimate of.
   const alphaGeometric = Math.hypot(un, w) > MIN_FLOW_SPEED ? Math.atan2(w, un) : 0;
-  const slope = def.airfoil.clAlpha * mach.clScale * separationFactor(s.state.stall.f);
+  const slope = def.airfoil.clAlpha * mach.clScale * separationFactor(separation);
   out.lift = q * def.area * slope * (alphaGeometric - alphaZeroLift);
   out.slope = (q * def.area * slope) / g.cosSweep;
 }

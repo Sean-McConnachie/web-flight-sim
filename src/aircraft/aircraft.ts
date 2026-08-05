@@ -13,11 +13,13 @@
  *
  *   1. clear
  *   2. aerodynamics   src/physics/aero/assembly.ts, which ADDS into the wrench
- *   3. thrust         each engine along body +x, AT its own nacelle position
- *   4. the ground     the three gear legs of src/physics/gear.ts and the seven
+ *   3. gear drag      the flat plate area of src/aircraft/me262/systems.ts times
+ *                     the dynamic pressure, AT ME262_GEAR_DRAG_POSITION
+ *   4. thrust         each engine along body +x, AT its own nacelle position
+ *   5. the ground     the three gear legs of src/physics/gear.ts and the seven
  *                     airframe points of src/physics/contact.ts, summed into one
  *                     wrench and capped there
- *   5. gravity        m * G0 on the world z axis, rotated into body axes
+ *   6. gravity        m * G0 on the world z axis, rotated into body axes
  *
  * GRAVITY. stepRK4 of src/physics/rigidbody.ts applies nothing on its own, so
  * this file adds it, one time, inside the wrench source. It is added in the
@@ -27,6 +29,25 @@
  * THRUST. The force of one engine goes in at the position of that engine, so
  * r x F gives the engine out yaw moment with no special case. An engine at
  * y = 2.05 m at 8800 N makes 18 kN m of yaw, and nothing in this file says so.
+ *
+ * GEAR DRAG. src/aircraft/me262/systems.ts reports an equivalent flat plate
+ * area and states that the flight model must multiply it by the dynamic
+ * pressure. THIS FILE IS THAT MULTIPLICATION, and it is the only one. The force
+ * belongs here for three reasons.
+ *
+ *   It is a force. systems.ts holds the POSITION of every moving part and
+ *   computes no force at all, which its own module comment states. The area is
+ *   its answer and the newton is this file's.
+ *   It needs the free stream. The dynamic pressure comes from the airspeed and
+ *   the density of the STAGE the integrator is evaluating, exactly as gravity
+ *   does, so it cannot be built once before the step.
+ *   No other file sums a wrench. src/physics/gear.ts makes the GROUND force of
+ *   a leg that touches the runway, and a gear that hangs in the air touches
+ *   nothing, so the drag of a retracting leg has no home there.
+ *
+ * The force acts AT the gear and not at the center of gravity. The legs hang
+ * 0.63 m below it, so the drag makes a nose down moment that grows with the
+ * square of the speed. That moment is what the pilot feels on the extension.
  *
  *
  * 2. WHAT RUNS ONE TIME PER STEP AND WHAT RUNS FOUR TIMES
@@ -110,6 +131,7 @@ import type { AirframeContact } from '@/physics/contact';
 import { MAX_GROUND_LOAD_FACTOR, limitContactWrench } from '@/physics/contact';
 import type { LandingGear } from '@/physics/gear';
 import {
+  ME262_GEAR_DRAG_POSITION,
   ME262_STATIC_CG_HEIGHT,
   createMe262AirframeContact,
   createMe262Gear,
@@ -179,6 +201,16 @@ export const RUDDER_LIMIT = 0.44; // rad, 25.2 deg
  * 0.03 percent.
  */
 const MASS_UPDATE_FUEL = 2; // kg
+
+/**
+ * Airspeed under which the gear drag reports nothing, m/s.
+ *
+ * The force follows the square of the speed and its DIRECTION is the unit
+ * airspeed vector, so the code divides by the speed. The guard holds that
+ * division away from zero. The force it throws away at the threshold is
+ * 0.5 * 1.225 * 0.1^2 * 0.6 m2, which is 4 micronewtons.
+ */
+export const MIN_GEAR_DRAG_SPEED = 0.1; // m/s
 
 /**
  * Wing strips whose local angle of attack drives the slat MECHANISM.
@@ -430,6 +462,10 @@ export function createAircraft(): Aircraft {
   const lastGoodState: RigidBodyState = createState();
   const thrustForce = new Vector3();
   const thrustMoment = new Vector3();
+  /** The airspeed of the STAGE, body axes. The gear drag lies along it. */
+  const stageAirspeed = new Vector3();
+  const gearDragForce = new Vector3();
+  const gearDragMoment = new Vector3();
   const gravityWorld = new Vector3();
   const gravityBody = new Vector3();
   const spawnHeading = new Quaternion();
@@ -468,7 +504,7 @@ export function createAircraft(): Aircraft {
   /**
    * The wrench source. stepRK4 calls it four times per step, at four stage
    * states. Read section 1 and section 2 of the module comment before you
-   * change the order of the five blocks below.
+   * change the order of the six blocks below.
    */
   function source(stage: RigidBodyState, _time: number, out: Wrench): void {
     // 1. The wrench arrives cleared. stepRK4 clears it before every stage.
@@ -477,7 +513,27 @@ export function createAircraft(): Aircraft {
     // the first stage advances the separation lag. See section 2.
     const stageTotals = assembly.evaluate(stage, wind, controls, firstStage ? stepDt : 0, out);
 
-    // 3. Thrust. Each engine pushes along body +x at its own position, so the
+    // 3. The drag of the landing gear. See the GEAR DRAG note of section 1.
+    // gearDragArea peaks IN TRANSIT, because the doors stand open across the
+    // flow while the leg hangs halfway down.
+    const gearDragArea = systems.gearDragArea();
+    if (gearDragArea > 0 && stageTotals.trueAirspeed > MIN_GEAR_DRAG_SPEED) {
+      // The drag opposes the airspeed vector, so it is the unit airspeed vector
+      // of THIS stage, in body axes, times q times the flat plate area.
+      airspeedBody(stage, wind, stageAirspeed);
+      gearDragForce
+        .copy(stageAirspeed)
+        .multiplyScalar(
+          (-stageTotals.dynamicPressure * gearDragArea) / stageTotals.trueAirspeed,
+        );
+      out.force.add(gearDragForce);
+      // AT the gear, not at the center of gravity. r x F is the nose down
+      // moment of a leg that hangs below the aircraft.
+      gearDragMoment.crossVectors(ME262_GEAR_DRAG_POSITION, gearDragForce);
+      out.moment.add(gearDragMoment);
+    }
+
+    // 4. Thrust. Each engine pushes along body +x at its own position, so the
     // r x F below is the whole engine out yaw moment.
     for (let i = 0; i < engines.length; i++) {
       const engine = engines[i];
@@ -487,11 +543,11 @@ export function createAircraft(): Aircraft {
       out.moment.add(thrustMoment);
     }
 
-    // 4. The ground. The gear and the airframe points were both built one time
+    // 5. The ground. The gear and the airframe points were both built one time
     // before the step, into one wrench, and capped there.
     addWrench(out, groundWrench);
 
-    // 5. Gravity. stepRK4 adds none of its own. The rotation must use the
+    // 6. Gravity. stepRK4 adds none of its own. The rotation must use the
     // orientation of THIS stage, which is why gravity sits here and not in
     // fixedUpdate.
     gravityWorld.set(0, 0, massProperties.mass * G0);

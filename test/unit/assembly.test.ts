@@ -928,6 +928,75 @@ describe('evaluate allocates nothing', () => {
     expect(Number.isFinite(out.moment.y)).toBe(true);
   });
 
+  it('returns the same wrench for the same state, whatever ran before it', () => {
+    // BEAD b61. The induced angle pass used to read the separation state that
+    // the LAST evaluation left behind, so the same state gave a different answer
+    // depending on what ran before it. Near the stall the two differed by a
+    // factor of four. The state that reaches evaluate, the controls, and the
+    // separation point of the strips are the whole of the input now.
+    const assembly = assemble([wing({ strips: 8, sweep: SWEEP }), tailplane()], [fuselage()]);
+    const out = createWrench();
+    for (const alpha of [2 * DEG, 12 * DEG, 16 * DEG, 20 * DEG]) {
+      const state = flightState(80, alpha);
+      // Drive the strips far from where this state wants them.
+      clearWrench(out);
+      assembly.evaluate(flightState(80, 30 * DEG), ZERO, NEUTRAL, STEP, out);
+      // dt of zero holds the separation state still, so the call is a pure
+      // function of the state it receives.
+      clearWrench(out);
+      assembly.evaluate(state, ZERO, NEUTRAL, 0, out);
+      const first = out.moment.y;
+      const firstForce = out.force.z;
+      for (let i = 0; i < 6; i++) {
+        clearWrench(out);
+        assembly.evaluate(state, ZERO, NEUTRAL, 0, out);
+      }
+      expect(out.moment.y).toBe(first);
+      expect(out.force.z).toBe(firstForce);
+    }
+  });
+
+  it('reaches the same steady answer from any separation state', () => {
+    // evaluateSteady drives every lag to the steady value of this state, so it
+    // carries nothing at all over from the call before it.
+    const assembly = assemble([wing({ strips: 8, sweep: SWEEP }), tailplane()], [fuselage()]);
+    const out = createWrench();
+    const state = flightState(80, 18 * DEG);
+
+    assembly.reset();
+    clearWrench(out);
+    assembly.evaluateSteady(state, ZERO, NEUTRAL, out);
+    const fromAttached = out.moment.y;
+
+    // Break the flow down hard first, then ask the same question again.
+    for (let i = 0; i < 200; i++) {
+      clearWrench(out);
+      assembly.evaluate(flightState(80, 35 * DEG), ZERO, NEUTRAL, STEP, out);
+    }
+    clearWrench(out);
+    assembly.evaluateSteady(state, ZERO, NEUTRAL, out);
+    // The fixed point of section 1a stops when the separation point moves less
+    // than 1e-9, which leaves a few parts in ten million on the moment.
+    expect(Math.abs(out.moment.y - fromAttached)).toBeLessThan(1e-5 * Math.abs(fromAttached));
+
+    // And the settled flight answer is the steady answer.
+    const settled = settle(assembly, state, NEUTRAL, 600);
+    expect(Math.abs(settled.moment.y - fromAttached)).toBeLessThan(1e-5 * Math.abs(fromAttached));
+  });
+
+  it('puts every lag state back to attached flow on a reset', () => {
+    const assembly = assemble([wing({ strips: 4 })]);
+    const out = createWrench();
+    settle(assembly, flightState(80, 24 * DEG), NEUTRAL, 400);
+    expect(assembly.surfaces[0].state.stall.f).toBeLessThan(0.5);
+    assembly.reset();
+    for (const surface of assembly.surfaces) {
+      expect(surface.state.stall.f).toBe(1);
+    }
+    expect(assembly.downwash.state.laggedEpsilon).toBe(0);
+    clearWrench(out);
+  });
+
   it('adds into the wrench the caller passes, so gravity and thrust can share it', () => {
     const assembly = assemble([wing({ strips: 4 })]);
     const state = flightState(150, 4 * DEG);
