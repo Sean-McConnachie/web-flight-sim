@@ -42,6 +42,7 @@ import {
 import { createLoop } from '@/core/loop';
 import type { InputSystem } from '@/input/bindings';
 import { createInputSystem } from '@/input/bindings';
+import { createTouchPad, touchScreenAvailable } from '@/input/touch';
 import { clamp } from '@/math/tables';
 import { G0 } from '@/math/units';
 import { equivalentAirspeed } from '@/physics/atmosphere';
@@ -60,6 +61,7 @@ import { createParticles } from '@/render/particles';
 import { createPostChain } from '@/render/postfx';
 import { createRenderer, isWebGPUAvailable } from '@/render/renderer';
 import { createWeaponEffects } from '@/render/weapons';
+import { createControlsMenu } from '@/ui/controls-menu';
 import type { TelemetrySample } from '@/ui/debug-overlay';
 import { createDebugOverlay } from '@/ui/debug-overlay';
 import type { CockpitGauges } from '@/ui/gauges';
@@ -70,6 +72,23 @@ import { createWorld } from '@/world/scene';
 
 /** Where the free camera starts, in NED, when the pilot turns it on. */
 const FREE_CAMERA_OFFSET_NED = new Vector3(-40, -25, -14);
+
+/**
+ * Decides whether the on screen pad starts on the screen.
+ *
+ * The browser answer is the default: a device with a finger and no cursor gets
+ * the pad, and a desktop does not. The query string `?touch=1` and `?touch=0`
+ * override that answer. The override exists because a developer on a desktop
+ * has no other way to see the pad, and because a laptop with a touch screen
+ * reports a cursor and may still want it. The controls menu carries the same
+ * switch for a pilot who is already flying.
+ */
+function touchPadStartsOn(): boolean {
+  const value = new URLSearchParams(window.location.search).get('touch');
+  if (value === '1' || value === 'on') return true;
+  if (value === '0' || value === 'off') return false;
+  return touchScreenAvailable();
+}
 
 /**
  * Where the recoil of the guns goes into the flight model.
@@ -191,8 +210,13 @@ function createBanner(parent: HTMLElement, top: string): Banner {
   root.style.top = top;
   root.style.left = '50%';
   root.style.transform = 'translate(-50%, -50%)';
-  root.style.maxWidth = '620px';
+  // The box must fit a phone as well as a desktop, so the width follows the
+  // window under the 620 px it wants.
+  root.style.maxWidth = 'min(620px, calc(100vw - 32px))';
   root.style.padding = '14px 20px';
+  // The touch pad of src/input/touch.ts sits at z-index 5. A failure message
+  // that a control covered would be a message the pilot never reads.
+  root.style.zIndex = '6';
   root.style.display = 'none';
   root.style.background = 'rgba(24, 6, 4, 0.86)';
   root.style.border = '1px solid #ff6b5e';
@@ -336,6 +360,12 @@ async function main(): Promise<void> {
   const world = createWorld(renderer, scene);
 
   const post = createPostChain(renderer, scene, camera);
+  // BEAD xq3. A phone runs the same bundle as a desktop over GitHub Pages, and
+  // the high chain adds ambient occlusion on top of the anti aliasing. The
+  // quality is set BEFORE the first frame, so no render target is freed in
+  // flight. CONVENTIONS section 6a says a free in flight kills the device.
+  const onTouchScreen = touchPadStartsOn();
+  if (onTouchScreen) post.setQuality('low');
   post.setSize(canvas.width, canvas.height);
   window.addEventListener('resize', () => post.setSize(canvas.width, canvas.height));
 
@@ -379,14 +409,31 @@ async function main(): Promise<void> {
   scene.add(particles.root);
 
   // --- The input ---------------------------------------------------------
+  // BEAD u1m. The on screen pad is the third device. It starts on the screen
+  // only when the browser reports a finger and no cursor, so a desktop never
+  // sees it. The controls menu below can turn it on by hand for a test.
+  const touch = createTouchPad(overlay, { visible: onTouchScreen });
+
   // The differential brake on the gamepad triggers only works while the wheels
   // touch the ground, so the input system asks the aircraft. BEAD b56: the
   // three flight axes also lose part of their travel as the dynamic pressure
   // rises, because the stick force of an unboosted control follows it. See
   // controlAuthority of src/input/bindings.ts.
   const input = createInputSystem({
+    touch,
     groundContact: () => aircraft.state.onGround,
     dynamicPressure: () => aircraft.state.totals.dynamicPressure,
+  });
+
+  // --- The controls menu ---------------------------------------------------
+  // BEAD dgi. Escape, F1 and the Start button raise `toggleMenu`, and until
+  // this bead nothing read it. The panel builds every row from the binding
+  // table, so the list a pilot reads is the map the code runs.
+  const menu = createControlsMenu(overlay, {
+    touchVisible: () => touch.visible,
+    setTouchVisible: (value: boolean) => {
+      touch.visible = value;
+    },
   });
 
   // --- The cameras -------------------------------------------------------
@@ -407,20 +454,43 @@ async function main(): Promise<void> {
   graphCorner.style.position = 'absolute';
   graphCorner.style.right = '0';
   graphCorner.style.bottom = '0';
-  graphCorner.style.width = '440px';
-  graphCorner.style.height = '260px';
+  // The chart wants 440 by 260. A phone window is smaller than that, so the box
+  // follows the window when the window is the smaller of the two.
+  graphCorner.style.width = 'min(440px, 62vw)';
+  graphCorner.style.height = 'min(260px, 40vh)';
   graphCorner.style.pointerEvents = 'none';
   overlay.appendChild(graphCorner);
   const graph = createTelemetryGraph(graphCorner);
+
+  // BEAD 6n6. `panelsVisible` hides EVERY overlay panel with one action. A
+  // phone screen is small and the panels cover the aircraft, so the pilot needs
+  // one control that clears the picture. H on the keyboard and PANELS on the
+  // pad both raise it.
+  //
+  // It is a separate switch from the debug level below. The debug level chooses
+  // WHICH instruments run. This switch chooses whether any of them draws. The
+  // pilot therefore comes back to the same instruments that were on before.
+  let panelsVisible = true;
+
   // F3 steps through the three debug levels: nothing, the numbers, and the
   // numbers with the per element force arrows.
-  let debugLevel = 1;
+  //
+  // The debug panels start OFF on a touch screen. They are a development
+  // instrument, they take the whole left edge and the whole bottom right
+  // corner, and a phone has neither to spare.
+  let debugLevel = onTouchScreen ? 0 : 1;
   const applyDebugLevel = (): void => {
-    debug.visible = debugLevel > 0;
-    graph.visible = debugLevel > 0;
+    const debugPanels = panelsVisible && debugLevel > 0;
+    debug.visible = debugPanels;
+    graph.visible = debugPanels;
+    // The arrows stand in the world and not on the glass, so they follow the
+    // debug level alone.
     arrows.visible = debugLevel > 1;
+    // The debug overlay owns the left edge and the chart owns the bottom right
+    // corner. The systems bar of the display may only move into either one
+    // while both are off. See `Hud.debugPanelsVisible`.
+    hud.debugPanelsVisible = debugPanels;
   };
-  applyDebugLevel();
 
   const telemetry: TelemetrySample = {
     loop: loopStats(),
@@ -439,6 +509,9 @@ async function main(): Promise<void> {
   // The display shows only in the outside views. The cockpit view has its own
   // instruments, which bead b37 builds.
   const hud = createHud(overlay);
+  // The switch above writes into the display as well as into the debug panels,
+  // so it runs here, where all three exist.
+  applyDebugLevel();
   const readoutEngines: EngineReadoutFields[] = aircraft.state.engines.map(() => ({
     rpm: 0,
     gasTemperature: 0,
@@ -495,6 +568,10 @@ async function main(): Promise<void> {
   // acts on it, so no press is lost and none is read twice.
   let pendingCycleView = false;
   let pendingToggleDebug = false;
+  let pendingToggleMenu = false;
+  let pendingTogglePanels = false;
+  let pendingRespawn = false;
+  let pendingFreeCamera = false;
 
   // --- The divergence banner ---------------------------------------------
   // The flight model reports a state that is no longer a finite number. It then
@@ -571,17 +648,20 @@ async function main(): Promise<void> {
     }
   }
 
-  window.addEventListener('keydown', (event: KeyboardEvent) => {
-    if (event.repeat) return;
-    if (event.code === 'KeyR') respawn();
-    if (event.code === 'F2') toggleFreeCamera();
-  });
+  // R and F2 used to sit on a key listener of their own, here. They are rows of
+  // the binding table now, with `respawn` and `toggleFreeCamera`, so the
+  // controls menu can find them and the pad can reach the respawn. See the last
+  // block of DEFAULT_BINDINGS in src/input/bindings.ts.
 
   const loop = createLoop({
     fixedUpdate(dt: number): void {
       input.poll(dt);
       if (input.state.cycleView) pendingCycleView = true;
       if (input.state.toggleDebug) pendingToggleDebug = true;
+      if (input.state.toggleMenu) pendingToggleMenu = true;
+      if (input.state.toggleHud) pendingTogglePanels = true;
+      if (input.state.respawn) pendingRespawn = true;
+      if (input.state.toggleFreeCamera) pendingFreeCamera = true;
       previousPosition.copy(aircraft.state.body.position);
       previousOrientation.copy(aircraft.state.body.orientation);
 
@@ -625,6 +705,23 @@ async function main(): Promise<void> {
         pendingToggleDebug = false;
         debugLevel = (debugLevel + 1) % 3;
         applyDebugLevel();
+      }
+      if (pendingToggleMenu) {
+        pendingToggleMenu = false;
+        menu.toggle();
+      }
+      if (pendingTogglePanels) {
+        pendingTogglePanels = false;
+        panelsVisible = !panelsVisible;
+        applyDebugLevel();
+      }
+      if (pendingRespawn) {
+        pendingRespawn = false;
+        respawn();
+      }
+      if (pendingFreeCamera) {
+        pendingFreeCamera = false;
+        toggleFreeCamera();
       }
 
       if (useFreeCamera) {
@@ -726,8 +823,14 @@ async function main(): Promise<void> {
       // The compute pass that moves every particle. It runs before the draw,
       // so the frame draws the positions of this frame.
       particles.update(aircraft, armament, renderPosition, renderOrientation, frameDt);
-      hud.visible = rig.mode !== 'cockpit';
+      // The display belongs to the outside views, and the pilot can clear every
+      // panel with the H key or the PANELS button. See `panelsVisible`.
+      hud.visible = panelsVisible && rig.mode !== 'cockpit';
       hud.update(telemetry, readout);
+
+      // The pad holds no lever of its own, so the bar of the throttle rocker
+      // reads the lever the binding table integrated.
+      touch.setThrottle(input.state.throttle);
 
       world.update(frameDt, camera.position);
       post.render();
@@ -744,6 +847,8 @@ async function main(): Promise<void> {
     world,
     aircraft,
     input,
+    touch,
+    menu,
     rig,
     hud,
     loop,

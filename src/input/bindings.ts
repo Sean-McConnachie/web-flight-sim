@@ -24,7 +24,9 @@
  *
  * DEFAULT_BINDINGS holds the whole map. The poll function reads that table. It
  * holds no hardware name of its own. A later remap screen can read the table,
- * write a new one, and pass it to `createInputSystem`.
+ * write a new one, and pass it to `createInputSystem`. src/ui/controls-menu.ts
+ * already reads the table and prints it, so the list a pilot sees can never
+ * disagree with the list the code runs.
  *
  * Rules the table follows:
  *
@@ -32,6 +34,9 @@
  *   of each one and then clamps. The rudder uses this: the right trigger adds
  *   and the left trigger subtracts.
  * - `keys` holds one code, or a pair in the order [negative, positive].
+ * - `touch` names one control of the on screen pad. src/input/touch.ts draws
+ *   that pad. It is a third device and the table maps it the same way it maps
+ *   the other two.
  * - A key code can carry a `Shift+` prefix. `Binding` has no modifier field, so
  *   the prefix carries the modifier inside the code string. When a code has a
  *   shifted binding, the unshifted binding of that same code stays off while
@@ -63,6 +68,8 @@ import type { AxisName, ButtonName, GamepadReader } from './gamepad';
 import { AXIS_NAMES, BUTTON_NAMES, createGamepadReader } from './gamepad';
 import type { KeyboardReader } from './keyboard';
 import { createKeyboardReader, SHIFT_CODES } from './keyboard';
+import type { TouchAxisName, TouchButtonName, TouchReader } from './touch';
+import { TOUCH_AXIS_NAMES, TOUCH_BUTTON_NAMES, createNullTouchReader } from './touch';
 
 export interface ControlInput {
   // Axes, all -1..1 unless stated
@@ -85,12 +92,18 @@ export interface ControlInput {
   toggleDebug: boolean;
   trimUp: boolean;         // held
   trimDown: boolean;       // held
+  toggleHud: boolean;      // hides or shows every overlay panel
+  respawn: boolean;        // puts the aircraft back on the runway threshold
+  toggleFreeCamera: boolean;
 }
+
+/** Which device the pilot last used. The prompts and the pad follow it. */
+export type ActiveDevice = 'gamepad' | 'keyboard' | 'touch';
 
 export interface InputSystem {
   readonly state: ControlInput;
   poll(dt: number): void;
-  readonly activeDevice: 'gamepad' | 'keyboard';
+  readonly activeDevice: ActiveDevice;
   dispose(): void;
 }
 
@@ -99,6 +112,8 @@ export interface Binding {
   kind: 'axis' | 'button' | 'rate';
   gamepad?: string;
   keys?: [string, string] | [string];
+  /** One control of the on screen pad. See src/input/touch.ts. */
+  touch?: string;
   scale?: number;
 }
 
@@ -107,6 +122,11 @@ export interface InputSystemOptions {
   gamepad?: GamepadReader;
   /** Keyboard reader. The system builds the real one when this is absent. */
   keyboard?: KeyboardReader;
+  /**
+   * On screen pad. The system builds a reader that reports nothing when this is
+   * absent, so a desktop and a test both run the same code path at no cost.
+   */
+  touch?: TouchReader;
   /** The map to use. DEFAULT_BINDINGS when this is absent. */
   bindings?: readonly Binding[];
   /**
@@ -153,6 +173,9 @@ const BOOLEAN_ACTIONS = [
   'toggleDebug',
   'trimUp',
   'trimDown',
+  'toggleHud',
+  'respawn',
+  'toggleFreeCamera',
 ] as const satisfies readonly BooleanAction[];
 
 /**
@@ -167,6 +190,9 @@ export const EDGE_ACTIONS: ReadonlySet<keyof ControlInput> = new Set<keyof Contr
   'cycleView',
   'toggleMenu',
   'toggleDebug',
+  'toggleHud',
+  'respawn',
+  'toggleFreeCamera',
 ]);
 
 /**
@@ -297,22 +323,42 @@ export function controlAuthority(dynamicPressure: number): number {
  * before these two keys. The keys carry no taxi gate, unlike the gamepad
  * triggers below, because a key that does nothing else cannot fight the rudder.
  * A pilot can therefore hold the aircraft straight with them after touchdown.
+ *
+ * The on screen pad, drawn by src/input/touch.ts:
+ *
+ *   stick            roll and pitch, down the screen is nose up
+ *   rudder           the bar over the stick
+ *   THR + and THR -  throttle, as a rate
+ *   the button block gear, both flap steps, both brakes, view, cannon, engine
+ *                    start and respawn
+ *   the top bar      the controls menu and the overlay panels
+ *
+ * The pad carries no look control, no debug level and no free camera. A phone
+ * screen holds the controls that fly the aircraft and no more.
  */
 export const DEFAULT_BINDINGS: readonly Binding[] = [
   // Stick axes.
-  { action: 'roll', kind: 'axis', gamepad: 'leftX', keys: ['KeyA', 'KeyD'], scale: 1 },
+  {
+    action: 'roll',
+    kind: 'axis',
+    gamepad: 'leftX',
+    keys: ['KeyA', 'KeyD'],
+    touch: 'stickX',
+    scale: 1,
+  },
   {
     action: 'pitch',
     kind: 'axis',
     gamepad: 'leftY',
     keys: ['KeyW', 'KeyS'],
+    touch: 'stickY',
     scale: PITCH_STICK_SCALE,
   },
 
   // Rudder. The two triggers make one axis: right minus left.
   { action: 'yaw', kind: 'axis', gamepad: 'rightTrigger', scale: 1 },
   { action: 'yaw', kind: 'axis', gamepad: 'leftTrigger', scale: -1 },
-  { action: 'yaw', kind: 'axis', keys: ['KeyQ', 'KeyE'], scale: 1 },
+  { action: 'yaw', kind: 'axis', keys: ['KeyQ', 'KeyE'], touch: 'rudder', scale: 1 },
 
   // Look. A stick that moves up looks up, which is the screen convention. The
   // head is not a flight control, so it does not follow the pitch convention.
@@ -320,8 +366,8 @@ export const DEFAULT_BINDINGS: readonly Binding[] = [
   { action: 'lookPitch', kind: 'axis', gamepad: 'rightY', scale: -1 },
 
   // Throttle. Every one of these is a rate. See THROTTLE_SWEEP_TIME.
-  { action: 'throttle', kind: 'rate', gamepad: 'dpadUp', scale: 1 },
-  { action: 'throttle', kind: 'rate', gamepad: 'dpadDown', scale: -1 },
+  { action: 'throttle', kind: 'rate', gamepad: 'dpadUp', touch: 'throttleUp', scale: 1 },
+  { action: 'throttle', kind: 'rate', gamepad: 'dpadDown', touch: 'throttleDown', scale: -1 },
   { action: 'throttle', kind: 'rate', keys: ['PageDown', 'PageUp'], scale: 1 },
   { action: 'throttle', kind: 'rate', keys: ['Shift+Minus', 'Shift+Equal'], scale: 1 },
 
@@ -329,27 +375,57 @@ export const DEFAULT_BINDINGS: readonly Binding[] = [
   // gates it. A button binding is the full brake and nothing gates it.
   { action: 'brakeLeft', kind: 'axis', gamepad: 'leftTrigger', scale: 1 },
   { action: 'brakeRight', kind: 'axis', gamepad: 'rightTrigger', scale: 1 },
-  { action: 'brakeLeft', kind: 'button', gamepad: 'b', keys: ['KeyB'], scale: 1 },
-  { action: 'brakeRight', kind: 'button', gamepad: 'b', keys: ['KeyB'], scale: 1 },
+  { action: 'brakeLeft', kind: 'button', gamepad: 'b', keys: ['KeyB'], touch: 'brake', scale: 1 },
+  { action: 'brakeRight', kind: 'button', gamepad: 'b', keys: ['KeyB'], touch: 'brake', scale: 1 },
   // One key per side. See the keyboard part of the comment above the table.
   { action: 'brakeLeft', kind: 'button', keys: ['KeyZ'], scale: 1 },
   { action: 'brakeRight', kind: 'button', keys: ['KeyC'], scale: 1 },
 
   // Buttons.
-  { action: 'toggleGear', kind: 'button', gamepad: 'a', keys: ['KeyG'] },
-  { action: 'toggleFlapsUp', kind: 'button', gamepad: 'dpadLeft', keys: ['Shift+KeyF'] },
-  { action: 'toggleFlapsDown', kind: 'button', gamepad: 'dpadRight', keys: ['KeyF'] },
-  { action: 'cycleView', kind: 'button', gamepad: 'y', keys: ['KeyV'] },
-  { action: 'startEngines', kind: 'button', gamepad: 'leftBumper', keys: ['Home'] },
-  { action: 'fireCannon', kind: 'button', gamepad: 'rightBumper', keys: ['Space'] },
-  { action: 'toggleMenu', kind: 'button', gamepad: 'start', keys: ['Escape'] },
+  { action: 'toggleGear', kind: 'button', gamepad: 'a', keys: ['KeyG'], touch: 'gear' },
+  {
+    action: 'toggleFlapsUp',
+    kind: 'button',
+    gamepad: 'dpadLeft',
+    keys: ['Shift+KeyF'],
+    touch: 'flapsUp',
+  },
+  {
+    action: 'toggleFlapsDown',
+    kind: 'button',
+    gamepad: 'dpadRight',
+    keys: ['KeyF'],
+    touch: 'flapsDown',
+  },
+  { action: 'cycleView', kind: 'button', gamepad: 'y', keys: ['KeyV'], touch: 'view' },
+  {
+    action: 'startEngines',
+    kind: 'button',
+    gamepad: 'leftBumper',
+    keys: ['Home'],
+    touch: 'engineStart',
+  },
+  { action: 'fireCannon', kind: 'button', gamepad: 'rightBumper', keys: ['Space'], touch: 'fire' },
+  { action: 'toggleMenu', kind: 'button', gamepad: 'start', keys: ['Escape'], touch: 'menu' },
+  // F1 is the key a browser user reaches for first, and Escape is the key a
+  // game player reaches for first. Both open the same menu.
+  { action: 'toggleMenu', kind: 'button', keys: ['F1'] },
   { action: 'toggleDebug', kind: 'button', keys: ['F3'] },
   { action: 'trimUp', kind: 'button', keys: ['BracketRight'] },
   { action: 'trimDown', kind: 'button', keys: ['BracketLeft'] },
+
+  // The three actions below moved out of src/main.ts and into this table. They
+  // used to sit on a separate key listener, so the controls menu could not find
+  // them and no pad could reach them. Every pilot control now has one home.
+  { action: 'toggleHud', kind: 'button', keys: ['KeyH'], touch: 'panels' },
+  { action: 'respawn', kind: 'button', keys: ['KeyR'], touch: 'respawn' },
+  { action: 'toggleFreeCamera', kind: 'button', keys: ['F2'] },
 ];
 
 const AXIS_NAME_SET: ReadonlySet<string> = new Set<string>(AXIS_NAMES);
 const BUTTON_NAME_SET: ReadonlySet<string> = new Set<string>(BUTTON_NAMES);
+const TOUCH_AXIS_SET: ReadonlySet<string> = new Set<string>(TOUCH_AXIS_NAMES);
+const TOUCH_BUTTON_SET: ReadonlySet<string> = new Set<string>(TOUCH_BUTTON_NAMES);
 
 function isAxisName(name: string): name is AxisName {
   return AXIS_NAME_SET.has(name);
@@ -357,6 +433,14 @@ function isAxisName(name: string): name is AxisName {
 
 function isButtonName(name: string): name is ButtonName {
   return BUTTON_NAME_SET.has(name);
+}
+
+function isTouchAxisName(name: string): name is TouchAxisName {
+  return TOUCH_AXIS_SET.has(name);
+}
+
+function isTouchButtonName(name: string): name is TouchButtonName {
+  return TOUCH_BUTTON_SET.has(name);
 }
 
 const NUMBER_ACTION_SET: ReadonlySet<keyof ControlInput> = new Set<keyof ControlInput>(
@@ -383,6 +467,8 @@ interface CompiledBinding {
   scale: number;
   axis: AxisName | null;
   button: ButtonName | null;
+  touchAxis: TouchAxisName | null;
+  touchButton: TouchButtonName | null;
   negativeKey: CompiledKey | null;
   positiveKey: CompiledKey | null;
   /** True when the action reads the press edge and not the hold. */
@@ -428,6 +514,19 @@ function compile(bindings: readonly Binding[]): CompiledBinding[] {
       }
     }
 
+    let touchAxis: TouchAxisName | null = null;
+    let touchButton: TouchButtonName | null = null;
+
+    if (binding.touch !== undefined) {
+      if (isTouchAxisName(binding.touch)) {
+        touchAxis = binding.touch;
+      } else if (isTouchButtonName(binding.touch)) {
+        touchButton = binding.touch;
+      } else {
+        throw new Error(`Unknown touch control in a binding: ${binding.touch}`);
+      }
+    }
+
     let negativeKey: CompiledKey | null = null;
     let positiveKey: CompiledKey | null = null;
     if (binding.keys !== undefined) {
@@ -445,6 +544,8 @@ function compile(bindings: readonly Binding[]): CompiledBinding[] {
       scale: binding.scale ?? 1,
       axis,
       button,
+      touchAxis,
+      touchButton,
       negativeKey,
       positiveKey,
       useEdge: EDGE_ACTIONS.has(binding.action),
@@ -475,18 +576,22 @@ function createControlInput(): ControlInput {
     toggleDebug: false,
     trimUp: false,
     trimDown: false,
+    toggleHud: false,
+    respawn: false,
+    toggleFreeCamera: false,
   };
 }
 
 /**
  * Build the input system.
  *
- * The system owns the two readers. It polls them and it disposes them. A test
+ * The system owns the three readers. It polls them and it disposes them. A test
  * passes its own readers through `options` and needs no browser.
  */
 export function createInputSystem(options?: InputSystemOptions): InputSystem {
   const gamepad: GamepadReader = options?.gamepad ?? createGamepadReader();
   const keyboard: KeyboardReader = options?.keyboard ?? createKeyboardReader();
+  const touch: TouchReader = options?.touch ?? createNullTouchReader();
   const groundContact: () => boolean = options?.groundContact ?? (() => false);
   const dynamicPressure: () => number = options?.dynamicPressure ?? (() => 0);
   const compiled = compile(options?.bindings ?? DEFAULT_BINDINGS);
@@ -503,16 +608,24 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
 
   /** The throttle lever position. The poll integrates the rate into it. */
   let throttleLever = 0;
-  let activeDevice: 'gamepad' | 'keyboard' = 'keyboard';
+  let activeDevice: ActiveDevice = 'keyboard';
 
   // Lists for the device activity test. Only a bound control counts.
   const boundAxes: AxisName[] = [];
   const boundButtons: ButtonName[] = [];
   const boundCodes: string[] = [];
+  const boundTouchAxes: TouchAxisName[] = [];
+  const boundTouchButtons: TouchButtonName[] = [];
   for (const binding of compiled) {
     if (binding.axis !== null && !boundAxes.includes(binding.axis)) boundAxes.push(binding.axis);
     if (binding.button !== null && !boundButtons.includes(binding.button)) {
       boundButtons.push(binding.button);
+    }
+    if (binding.touchAxis !== null && !boundTouchAxes.includes(binding.touchAxis)) {
+      boundTouchAxes.push(binding.touchAxis);
+    }
+    if (binding.touchButton !== null && !boundTouchButtons.includes(binding.touchButton)) {
+      boundTouchButtons.push(binding.touchButton);
     }
     for (const key of [binding.negativeKey, binding.positiveKey]) {
       if (key !== null && !boundCodes.includes(key.code)) boundCodes.push(key.code);
@@ -537,6 +650,8 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
     let value = 0;
     if (binding.axis !== null) value += gamepad.axis(binding.axis);
     if (binding.button !== null && gamepad.held(binding.button)) value += 1;
+    if (binding.touchAxis !== null) value += touch.axis(binding.touchAxis);
+    if (binding.touchButton !== null && touch.held(binding.touchButton)) value += 1;
     if (binding.positiveKey !== null && keyIsOn(binding.positiveKey, false, shift)) value += 1;
     if (binding.negativeKey !== null && keyIsOn(binding.negativeKey, false, shift)) value -= 1;
     return value;
@@ -549,6 +664,15 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
       if (edge ? gamepad.pressed(binding.button) : gamepad.held(binding.button)) return true;
     }
     if (binding.axis !== null && Math.abs(gamepad.axis(binding.axis)) >= AXIS_AS_BUTTON_THRESHOLD) {
+      return true;
+    }
+    if (binding.touchButton !== null) {
+      if (edge ? touch.pressed(binding.touchButton) : touch.held(binding.touchButton)) return true;
+    }
+    if (
+      binding.touchAxis !== null &&
+      Math.abs(touch.axis(binding.touchAxis)) >= AXIS_AS_BUTTON_THRESHOLD
+    ) {
       return true;
     }
     if (binding.positiveKey !== null && keyIsOn(binding.positiveKey, edge, shift)) return true;
@@ -573,20 +697,35 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
     return false;
   }
 
+  function touchIsActive(): boolean {
+    for (const name of boundTouchAxes) {
+      if (Math.abs(touch.axis(name)) > DEVICE_ACTIVITY_THRESHOLD) return true;
+    }
+    for (const name of boundTouchButtons) {
+      if (touch.held(name)) return true;
+    }
+    return false;
+  }
+
   return {
     state,
 
-    get activeDevice(): 'gamepad' | 'keyboard' {
+    get activeDevice(): ActiveDevice {
       return activeDevice;
     },
 
     poll(dt: number): void {
       gamepad.poll();
       keyboard.poll();
+      touch.poll();
 
-      // The last device that moved owns the prompts. A frame that moves both
-      // reports the keyboard, because a hand on the keys is the clear intent.
+      // The last device that moved owns the prompts. A frame that moves more
+      // than one reports the LAST test that passed, and the order below is the
+      // order of how clear the intent is. A hand on the keys is the clearest,
+      // because a key needs no calibration and reports no noise. A finger on
+      // the pad is next. A stick that rests off center is the least clear.
       if (gamepadIsActive()) activeDevice = 'gamepad';
+      if (touchIsActive()) activeDevice = 'touch';
       if (keyboardIsActive()) activeDevice = 'keyboard';
 
       const shift = shiftIsDown();
@@ -663,6 +802,7 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
     dispose(): void {
       gamepad.dispose();
       keyboard.dispose();
+      touch.dispose();
       throttleLever = 0;
       const clean = createControlInput();
       for (const action of NUMBER_ACTIONS) state[action] = clean[action];
@@ -696,6 +836,9 @@ function createBooleanAccumulator(): Record<BooleanAction, boolean> {
     toggleDebug: false,
     trimUp: false,
     trimDown: false,
+    toggleHud: false,
+    respawn: false,
+    toggleFreeCamera: false,
   };
 }
 

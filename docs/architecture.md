@@ -18,8 +18,8 @@ separation rule shapes every choice here.
 | `src/aircraft/` | the Me-262 airframe, its mass model, its engines, its systems, the trim solver |
 | `src/world/` | runway, ground scatter, scene assembly |
 | `src/render/` | renderer, cameras, models, sky, clouds, particles, post processing |
-| `src/ui/` | head up display, cockpit gauges, debug overlay, telemetry graph |
-| `src/input/` | keyboard, gamepad, the binding table |
+| `src/ui/` | head up display, cockpit gauges, controls menu, debug overlay, telemetry graph |
+| `src/input/` | keyboard, gamepad, the on screen touch pad, the binding table |
 | `src/weapons/` | the MK 108 cannon, ballistics, ground targets |
 
 `src/main.ts` builds every part and joins them. It is the only file that knows

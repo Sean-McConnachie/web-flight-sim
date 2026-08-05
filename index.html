@@ -2,7 +2,23 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!--
+      maximum-scale and user-scalable hold the page still. Two fingers on the
+      virtual stick and the rudder bar read as a pinch without them, and the
+      browser zooms the page in the middle of a turn.
+      viewport-fit=cover lets the page draw under a notch. Every panel then uses
+      the env(safe-area-inset-*) values to keep clear of it.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#070b09" />
+    <meta
+      name="description"
+      content="A flight simulator of the Messerschmitt Me-262 A-1a, in the browser."
+    />
     <title>Me-262 Flight Simulator</title>
     <style>
       html,
@@ -11,6 +27,9 @@
         padding: 0;
         height: 100%;
         overflow: hidden;
+        /* A drag that reaches the end of the page bounces on a phone and drops
+           the pointer stream. The controls need every event. */
+        overscroll-behavior: none;
         background: #000;
         color: #dfe6ee;
         font-family: ui-monospace, 'DejaVu Sans Mono', monospace;
@@ -18,7 +37,12 @@
       #canvas {
         display: block;
         width: 100vw;
+        /* 100vh counts the address bar of a phone browser, so the bottom of the
+           picture hides behind it. 100dvh follows the bar as it moves. The vh
+           line stays in front as the value for a browser with no dvh. */
         height: 100vh;
+        height: 100dvh;
+        touch-action: none;
       }
       #overlay {
         position: fixed;
@@ -35,6 +59,13 @@
         font-size: 1rem;
         line-height: 1.6;
         white-space: pre-wrap;
+        overflow: auto;
+      }
+      @media (max-width: 760px) {
+        #fatal {
+          padding: 1.5rem;
+          font-size: 0.85rem;
+        }
       }
     </style>
   </head>

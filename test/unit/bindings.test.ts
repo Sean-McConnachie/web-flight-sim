@@ -9,6 +9,13 @@ import {
   createInputSystem,
   DEFAULT_BINDINGS,
 } from '@/input/bindings';
+import type { TouchAxisName, TouchButtonName, TouchReader } from '@/input/touch';
+import {
+  TOUCH_AXIS_NAMES,
+  TOUCH_BUTTON_NAMES,
+  TOUCH_DRAWN_AXES,
+  TOUCH_DRAWN_BUTTONS,
+} from '@/input/touch';
 
 /**
  * A fake gamepad and a fake keyboard. The test writes the hardware by hand, so
@@ -86,9 +93,55 @@ function createFakeKeyboard(): FakeKeyboard {
   };
 }
 
+/**
+ * A fake on screen pad. It holds the same edge shape the two fakes above hold,
+ * so the touch path runs in Node with no DOM and no finger.
+ */
+interface FakeTouch extends TouchReader {
+  setAxis(name: TouchAxisName, value: number): void;
+  setButton(name: TouchButtonName, down: boolean): void;
+}
+
+function createFakeTouch(): FakeTouch {
+  const axes = new Map<TouchAxisName, number>();
+  const hardware = new Set<TouchButtonName>();
+  let now = new Set<TouchButtonName>();
+  let before = new Set<TouchButtonName>();
+
+  return {
+    active: true,
+    visible: true,
+    poll(): void {
+      before = now;
+      now = new Set(hardware);
+    },
+    axis: (name) => axes.get(name) ?? 0,
+    held: (name) => now.has(name),
+    pressed: (name) => now.has(name) && !before.has(name),
+    released: (name) => !now.has(name) && before.has(name),
+    setThrottle(): void {
+      // The fake draws no bar.
+    },
+    dispose(): void {
+      hardware.clear();
+      now.clear();
+      before.clear();
+      axes.clear();
+    },
+    setAxis(name, value): void {
+      axes.set(name, value);
+    },
+    setButton(name, down): void {
+      if (down) hardware.add(name);
+      else hardware.delete(name);
+    },
+  };
+}
+
 interface Rig {
   pad: FakeGamepad;
   keys: FakeKeyboard;
+  touch: FakeTouch;
   input: InputSystem;
   /** Reports the wheels on the ground. The test writes it. */
   onGround: { value: boolean };
@@ -101,15 +154,18 @@ const FRAME = 1 / 60;
 function createRig(): Rig {
   const pad = createFakeGamepad();
   const keys = createFakeKeyboard();
+  const touch = createFakeTouch();
   const onGround = { value: false };
   const input = createInputSystem({
     gamepad: pad,
     keyboard: keys,
+    touch,
     groundContact: () => onGround.value,
   });
   return {
     pad,
     keys,
+    touch,
     input,
     onGround,
     frame(dt = FRAME): ControlInput {
@@ -475,7 +531,123 @@ describe('the binding table', () => {
 
   it('every binding names a source', () => {
     for (const binding of DEFAULT_BINDINGS) {
-      expect(binding.gamepad !== undefined || binding.keys !== undefined).toBe(true);
+      const named =
+        binding.gamepad !== undefined || binding.keys !== undefined || binding.touch !== undefined;
+      expect(named).toBe(true);
     }
+  });
+});
+
+describe('the on screen pad', () => {
+  it('the stick drives roll and pitch, and a thumb down the screen raises the nose', () => {
+    const rig = createRig();
+    rig.touch.setAxis('stickX', 1);
+    // A finger below the center of the stick reports a positive Y, which pulls
+    // the stick back. See the module comment of src/input/touch.ts.
+    rig.touch.setAxis('stickY', 1);
+    const state = rig.frame();
+    expect(state.roll).toBeCloseTo(1, 9);
+    expect(state.pitch).toBeCloseTo(1, 9);
+  });
+
+  it('the rudder bar drives yaw both ways', () => {
+    const rig = createRig();
+    rig.touch.setAxis('rudder', -1);
+    expect(rig.frame().yaw).toBeCloseTo(-1, 9);
+    rig.touch.setAxis('rudder', 0.5);
+    expect(rig.frame().yaw).toBeCloseTo(0.5, 9);
+  });
+
+  it('the throttle rocker moves the lever at the rate of the other devices', () => {
+    const rig = createRig();
+    rig.touch.setButton('throttleUp', true);
+    // One second of the upper half opens the lever by one sweep time.
+    for (let i = 0; i < 60; i++) rig.frame();
+    const opened = rig.input.state.throttle;
+    expect(opened).toBeGreaterThan(0.1);
+
+    rig.touch.setButton('throttleUp', false);
+    rig.touch.setButton('throttleDown', true);
+    for (let i = 0; i < 60; i++) rig.frame();
+    expect(rig.input.state.throttle).toBeLessThan(opened);
+  });
+
+  it('a button that carries an edge action fires one time for each press', () => {
+    const rig = createRig();
+    rig.touch.setButton('gear', true);
+    expect(rig.frame().toggleGear).toBe(true);
+    // The finger stays down. The action must not fire again.
+    expect(rig.frame().toggleGear).toBe(false);
+    rig.touch.setButton('gear', false);
+    rig.frame();
+    rig.touch.setButton('gear', true);
+    expect(rig.frame().toggleGear).toBe(true);
+  });
+
+  it('a button that carries a held action stays true while the finger is down', () => {
+    const rig = createRig();
+    rig.touch.setButton('fire', true);
+    expect(rig.frame().fireCannon).toBe(true);
+    expect(rig.frame().fireCannon).toBe(true);
+    rig.touch.setButton('fire', false);
+    expect(rig.frame().fireCannon).toBe(false);
+  });
+
+  it('the BRAKE button drives both wheels at any speed and at any throttle', () => {
+    const rig = createRig();
+    rig.onGround.value = false;
+    rig.touch.setButton('brake', true);
+    const state = rig.frame();
+    expect(state.brakeLeft).toBeCloseTo(1, 9);
+    expect(state.brakeRight).toBeCloseTo(1, 9);
+  });
+
+  it('a finger on the pad claims the active device', () => {
+    const rig = createRig();
+    rig.frame();
+    expect(rig.input.activeDevice).toBe('keyboard');
+    rig.touch.setAxis('stickX', 1);
+    rig.frame();
+    expect(rig.input.activeDevice).toBe('touch');
+    // A hand back on the keys wins over a finger that rests on the glass.
+    rig.keys.setKey('KeyA', true);
+    rig.frame();
+    expect(rig.input.activeDevice).toBe('keyboard');
+  });
+
+  it('the pad draws every control it names, and the table binds every one', () => {
+    // A name that the pad never draws is a control no pilot can reach. A name
+    // the table never binds is a control that does nothing.
+    expect([...TOUCH_DRAWN_BUTTONS].sort()).toEqual([...TOUCH_BUTTON_NAMES].sort());
+    expect([...TOUCH_DRAWN_AXES].sort()).toEqual([...TOUCH_AXIS_NAMES].sort());
+
+    const bound = new Set<string>();
+    for (const binding of DEFAULT_BINDINGS) {
+      if (binding.touch !== undefined) bound.add(binding.touch);
+    }
+    for (const name of TOUCH_AXIS_NAMES) expect(bound.has(name)).toBe(true);
+    for (const name of TOUCH_BUTTON_NAMES) expect(bound.has(name)).toBe(true);
+  });
+
+  it('an unknown touch control in a binding fails at build time', () => {
+    expect(() =>
+      createInputSystem({
+        gamepad: createFakeGamepad(),
+        keyboard: createFakeKeyboard(),
+        bindings: [{ action: 'roll', kind: 'axis', touch: 'nose wheel' }],
+      }),
+    ).toThrow(/Unknown touch control/);
+  });
+
+  it('the system runs with no pad at all', () => {
+    // A desktop passes no pad. Every touch read must then be a quiet zero.
+    const input = createInputSystem({
+      gamepad: createFakeGamepad(),
+      keyboard: createFakeKeyboard(),
+    });
+    input.poll(FRAME);
+    expect(input.state.roll).toBe(0);
+    expect(input.state.toggleGear).toBe(false);
+    input.dispose();
   });
 });

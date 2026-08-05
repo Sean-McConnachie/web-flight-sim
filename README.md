@@ -15,12 +15,23 @@ model therefore runs in the browser and in a Node test harness. 26 flight tests
 hold 31 measurements against published data and against the class bands of a
 fighter of the period.
 
+## Fly it
+
+The simulator runs on GitHub Pages at
+<https://sean-mcconnachie.github.io/web-flight-sim/>. It needs a browser with
+WebGPU or WebGL 2. A phone works: the page draws its own controls when it sees a
+touch screen.
+
+`.github/workflows/deploy.yml` builds and publishes the page. It runs the type
+check, the 871 unit tests and the 26 flight tests first. A broken flight model
+therefore cannot reach the site.
+
 ## Run it
 
 ```sh
 npm install          # install the dependencies, once
 npm run dev          # start the Vite dev server on port 5173
-npm run test:unit    # 846 unit tests
+npm run test:unit    # 871 unit tests
 npm run test:flight  # 26 flight tests, 31 measurements
 npm run typecheck    # the TypeScript compiler, no emit
 npm run lint:ste     # check the prose of every document
@@ -65,7 +76,17 @@ WebGL2 backend, so check the backend before you trust a screenshot.
 | Change the view | V | Y |
 | Look around | the mouse, left button held | right stick |
 | Respawn | R | |
+| The controls menu | Escape or F1 | Start |
+| Hide every panel | H | |
 | Debug level | F3 | |
+
+**Press Escape or F1 for the full list.** The menu builds every row from the
+binding table, so it can never disagree with the code.
+
+**A phone gets an on screen pad.** It has a stick, a rudder bar, a throttle
+rocker and a block of buttons. It appears on its own when the browser reports a
+touch screen with no cursor. To see it on a desktop, add `?touch=1` to the
+address or press the TOUCH PAD button in the menu.
 
 The throttle is a RATE and not a position. A full sweep takes 2 seconds.
 
@@ -122,6 +143,7 @@ behind it.
 | The tire friction has no speed term | fw3 | `docs/flight-model.md` |
 | The maximum speed gains too little with altitude | ole | `docs/validation.md` |
 | The control authority law does not cap a held stick | 4rq | `docs/controls.md` |
+| The touch pad cannot be moved, resized or remapped | none | `docs/controls.md` |
 | The Mach tuck still leans on the wing section shift | none | `docs/flight-model.md` |
 | The trim keys do nothing, because there is no trim channel | none | `docs/controls.md` |
 | There is no shutdown path and nothing calls dispose | none | `docs/architecture.md` |

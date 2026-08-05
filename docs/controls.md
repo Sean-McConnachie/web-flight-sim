@@ -11,7 +11,7 @@ piece of hardware to an action.
 
 ## Input devices
 
-Two devices, and the simulator accepts both at the same time.
+Three devices, and the simulator accepts all of them at the same time.
 
 - **A gamepad with the standard mapping.** The text below names the buttons the
 way an Xbox controller labels them. `src/input/gamepad.ts` also handles the
@@ -19,11 +19,16 @@ older layout that Firefox on Linux reports. In that layout the triggers arrive
 as axes 2 and 5 rather than as buttons 6 and 7.
 - **The keyboard.** `src/input/keyboard.ts` reads `KeyboardEvent.code`, which is
 the physical key. The map therefore works on a keyboard of any layout.
+- **The on screen pad.** `src/input/touch.ts` draws a virtual stick, a rudder
+bar, a throttle rocker and a block of buttons. It is a device like the other
+two, and the binding table maps it through the `touch` field of a `Binding`.
 
 The input system reports which device the pilot last used, as `activeDevice`. A
 gamepad axis must pass 0.25, or a bound gamepad button must go down, before the
-pad counts as active. Any bound key counts at once. If both move in the same
-poll, the keyboard wins.
+pad counts as active. A touch axis takes the same 0.25 test. Any bound key
+counts at once. If more than one device moves in the same poll, the keyboard
+wins, then the touch pad, then the gamepad. A hand on the keys is the clearest
+statement of intent, because a key reports no noise.
 
 The keyboard reader drops the automatic repeat of the operating system, so a
 held key raises one press edge and not twenty. It also releases every held key
@@ -76,7 +81,8 @@ gives.
 | V | change the view |
 | Home | engine start, held |
 | Space | fire the cannon, held |
-| Escape | menu |
+| Escape or F1 | the controls menu |
+| H | hide or show every overlay panel |
 | R | respawn on the runway |
 | F2 | the developer free camera |
 | F3 | the debug level |
@@ -85,8 +91,101 @@ gives.
 Any key that a shifted binding claims goes dead while a Shift key is down. That
 is why `F` lowers the flaps and `Shift F` raises them, with no risk of both.
 
-R and F2 are the only two keys above that `src/input/bindings.ts` does NOT hold.
-`src/main.ts` listens for those two directly.
+`src/input/bindings.ts` holds every key in the table above. R and F2 used to sit
+on a separate key listener inside `src/main.ts`, and the controls menu could
+therefore not find them. They are rows of the binding table now, as the
+`respawn` and `toggleFreeCamera` actions.
+
+## The on screen pad
+
+`src/input/touch.ts` draws the pad. It starts on the screen when the browser
+reports `pointer: coarse` and `hover: none`, which a phone and a tablet both
+report and a desktop does not. Two other ways turn it on: the TOUCH PAD button
+of the controls menu, and the query string `?touch=1` on the address. `?touch=0`
+turns it off.
+
+| Control | Where it stands | Action |
+| --- | --- | --- |
+| Stick | bottom left | roll and pitch |
+| Rudder bar | over the stick | rudder |
+| THR + and THR - | bottom right, tall | throttle, as a rate |
+| ENG | button block | engine start, held |
+| FLAP UP and FLAP DN | button block | flaps, one step each |
+| GEAR | button block | landing gear |
+| BRAKE | button block | both wheel brakes |
+| VIEW | button block | change the view |
+| FIRE | button block | fire the cannon, held |
+| RESET | button block | respawn on the runway |
+| MENU | top bar | the controls menu |
+| PANELS | top bar | hide or show every overlay panel |
+| HIDE PAD | top bar | collapse the pad to this one button |
+
+**A finger down the screen pulls the stick back.** The stick reports a positive
+Y when the thumb moves toward the bottom of the screen. The gamepad left stick
+reports the same sign when the pilot pulls it back. The two devices therefore
+share one row of the binding table.
+
+The stick and the rudder bar both have a FIXED center and both return to zero
+when the finger lifts. A floating center would move the neutral point of the
+aircraft under the pilot.
+
+Each control captures the pointer that starts on it. A thumb that slides off the
+edge of the stick still holds the stick, the way a real hand does. Every control
+sets `touch-action: none`, so the browser cannot read a drag as a scroll or two
+fingers as a zoom. The page itself sets `user-scalable=no` for the same reason.
+
+The pad carries no look control, no debug level and no free camera. A phone
+screen holds the controls that fly the aircraft and no more.
+
+The pad reports nothing while it is hidden or collapsed. A hidden pad also takes
+no pointer event, so the picture under it keeps every gesture. A collapse or a
+window that loses the focus releases every control, the same way the keyboard
+reader releases every key on blur.
+
+## The controls menu
+
+Escape, F1, the gamepad Start button and the MENU button of the pad all open the
+same panel. `src/ui/controls-menu.ts` builds it.
+
+The panel prints one row for each action, with the controls of all three devices
+side by side. It builds every row from `DEFAULT_BINDINGS`, so a change to a
+binding changes the printed list on the next start. A list written by hand goes
+stale the first time somebody moves a key.
+
+Two things the binding table cannot supply live in that file. `ACTION_INFO`
+gives the words for each action. Its type is a complete record over
+`ControlInput`, so the compiler refuses the file when an action has no words.
+`EXTRA_NOTES` holds the mouse, because a mouse reports movement and a binding
+needs a position.
+
+A control pair prints in the order of the words in front of it. The label
+`Rudder (left, right)` therefore prints the left trigger first. The rule is the
+sign of the scale. A binding with a negative scale is the first direction, and a
+key pair already arrives in the order `[negative, positive]`.
+
+**The menu does not stop the simulator.** The aircraft keeps flying while the
+panel is open, so a pilot who opens it in a turn comes back to the turn.
+
+## Hiding the panels
+
+H on the keyboard, and the PANELS button of the pad, raise the `toggleHud`
+action. It hides the head up display, the debug overlay and the telemetry chart
+together, and it shows all of them again. A phone screen is small and the panels
+cover the aircraft, so the pilot needs one control that clears the picture.
+
+It is a separate switch from the debug level of F3. The debug level chooses
+WHICH instruments run. This switch chooses whether any of them draws, so the
+pilot comes back to the same instruments that were on before.
+
+The debug overlay and the telemetry chart start OFF on a touch screen. They are
+a development instrument, they take the whole left edge and the whole bottom
+right corner, and a phone has neither to spare.
+
+The head up display has its own rule for a narrow or a short window. The systems
+bar leaves the bottom edge, which belongs to the pad, and stands at the top left
+in two columns. It only moves while the debug overlay and the chart are both
+off, because those two own the corners it moves into. `Hud.debugPanelsVisible`
+carries that answer from `src/main.ts`.
 
 ## Response curves and dead zones
 
@@ -110,8 +209,13 @@ A trigger takes a plain dead zone on its 0 to 1 range and then the same curve.
 
 **A key gives full deflection at once.** There is no ramp and no self centering
 on the roll, pitch and yaw keys. A press adds the whole 1 and a release removes
-it in the same poll. This is a real difference between the two devices and a
-pilot on the keyboard should know it.
+it in the same poll. This is a real difference between the devices and a pilot
+on the keyboard should know it.
+
+The on screen pad takes NO dead zone and NO expo curve. It reports the offset of
+the finger from the center of the control over the travel radius, clamped to the
+range -1 to 1. A finger holds a position on glass, so there is no spring to
+center and no noise to remove.
 
 The throttle is the one input with memory. Every throttle binding is a RATE and
 not a position. The binding table clamps the summed rate to plus or minus 1. The
@@ -236,8 +340,8 @@ without punishing a pilot who holds a digital button down.
 
 ## Camera and view controls
 
-V on the keyboard, or Y on the gamepad, steps through four views: cockpit,
-chase, orbit and flyby. The simulator starts in chase.
+V on the keyboard, Y on the gamepad, or VIEW on the pad steps through four
+views: cockpit, chase, orbit and flyby. The simulator starts in chase.
 
 The right stick moves the view. In the cockpit, the chase and the flyby views it
 is an absolute head position. The limits are 2.4 rad of yaw and 1.2 rad of
@@ -259,8 +363,8 @@ telemetry graph, and then the force arrows as well.
 ## Input to command pipeline
 
 ```
-gamepad and keyboard readers
-  -> dead zone and expo, per device
+gamepad, keyboard and touch readers
+  -> dead zone and expo, gamepad only
      -> the binding table sums every source into one action
         -> throttle rate integration, held between polls
         -> controlAuthority scales roll, pitch and yaw
@@ -270,15 +374,16 @@ gamepad and keyboard readers
                  -> control deflections, in radians
 ```
 
-`ControlInput` carries 8 numbers and 10 booleans. The axes run from -1 to 1,
+`ControlInput` carries 8 numbers and 13 booleans. The axes run from -1 to 1,
 apart from the throttle and the two brakes, which run from 0 to 1. Positive
 pitch raises the nose, positive roll rolls right, and positive yaw moves the
 nose right.
 
 `AircraftInput` is a strict subset of `ControlInput`, field for field, so
-`src/main.ts` passes one straight in as the other with no conversion. The eight
-fields the aircraft does not read go to the camera rig, the debug level and the
-guns. Three of those eight fields go to nothing at all.
+`src/main.ts` passes one straight in as the other with no conversion. The eleven
+fields the aircraft does not read go to the camera rig and the guns. They also go
+to the controls menu, the panels, the debug level and the respawn. Two of those
+eleven fields go to nothing at all, and both are trim.
 
 ## Known gaps
 
@@ -310,5 +415,14 @@ Me-262 pilot trimmed with a moving tailplane, and that channel is the one the
 Mach recovery of `docs/validation.md` needs. The flight test stands in for it
 with a steady elevator command.
 
-**The menu command has no consumer.** Escape and the Start button both raise
-`toggleMenu`, and no code reads it. There is no menu.
+**The on screen pad has no look control.** A pilot on a phone changes the view
+with the VIEW button and takes the view the camera rig gives. A second stick for
+the head would leave no room for the button block.
+
+**The pad cannot be moved or resized.** The layout is fixed in the style sheet
+of `src/input/touch.ts`. A pilot with small hands or a left hand throttle has no
+way to change it.
+
+**The bindings cannot be remapped.** `createInputSystem` already takes a table,
+and the controls menu already reads one, so the parts are in place. Nothing
+writes a new table and nothing stores one.

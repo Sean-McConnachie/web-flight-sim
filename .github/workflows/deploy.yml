@@ -1,0 +1,69 @@
+# Build the bundle and publish it to GitHub Pages.
+#
+# The job runs the type check, the unit tests and the flight tests before it
+# builds. A broken flight model must not reach the page.
+#
+# `npm run build` runs `tsc --noEmit` and then `vite build`. vite.config.ts sets
+# a relative base, so the bundle runs under the repository name with no extra
+# input to this file.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  # A hand start, for a deploy with no commit behind it.
+  workflow_dispatch:
+
+# The deploy needs to read the repository, write the Pages artifact and mint the
+# token that the deploy step exchanges.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time. A second push waits, and it does not cancel the run in
+# flight, so a half written page never reaches the site.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Flight tests
+        run: npm run test:flight
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -164,6 +164,19 @@ export interface Hud {
   update(s: TelemetrySample, aircraft: AircraftReadout): void;
   /** Set to false to hide the display. It then does no work. */
   visible: boolean;
+  /**
+   * True while the debug overlay and the telemetry chart are on the screen.
+   *
+   * BEAD 6n6. On a narrow window the systems bar leaves the bottom edge and
+   * stands at the top left, because the bottom belongs to the touch pad. The
+   * debug overlay owns that same corner and the chart owns the bottom right, so
+   * the bar can only move when BOTH are off. The composition root knows which
+   * panels run and this file does not, so the answer arrives here.
+   *
+   * It is true by default, which is the safe answer: the bar then keeps the
+   * places it had before this bead.
+   */
+  debugPanelsVisible: boolean;
   dispose(): void;
 }
 
@@ -760,6 +773,54 @@ const CSS = `
   color: #5f9077;
   font-size: 11px;
 }
+
+/* --- The narrow window ---------------------------------------------------
+   BEAD 6n6. The two panels above stand in a window that is at least 700 px
+   wide. A phone in landscape gives about 844 by 390, and the bottom of that
+   window belongs to the touch pad of src/input/touch.ts.
+
+   The rule runs on a SHORT window as well as on a narrow one. A phone in
+   landscape is wide and short.
+
+   Every panel here shrinks its text and keeps clear of the notch and the home
+   bar through the safe area insets. The systems bar also MOVES, and that move
+   needs one more condition. See the hfs-hud-free block below it. */
+@media (max-width: 820px), (max-height: 520px) {
+  .hfs-hud { font-size: 11px; }
+  .hfs-hud-flight {
+    top: max(10px, env(safe-area-inset-top));
+    right: max(10px, env(safe-area-inset-right));
+    padding: 5px 7px;
+  }
+  .hfs-hud-systems { padding: 5px 7px; }
+  .hfs-hud-cell { grid-template-columns: 42px auto 26px; }
+  .hfs-hud-label { font-size: 10px; }
+  .hfs-hud-unit { padding-left: 4px; font-size: 10px; }
+  .hfs-hud-alerts {
+    top: max(10px, env(safe-area-inset-top));
+    font-size: 12px;
+    letter-spacing: 0.08em;
+  }
+
+  /* The bar leaves the bottom edge only while the top left corner and the
+     bottom right corner are both free. The class hfs-hud-free says they are,
+     and the composition root writes it through Hud.debugPanelsVisible. Without
+     the condition the bar draws straight over the debug overlay, which is what
+     a 844 by 390 window did before this rule existed.
+
+     It also drops from four columns to two, so the cells stay readable in a
+     box that is now a third of the width it had. */
+  .hfs-hud-free .hfs-hud-systems {
+    left: max(10px, env(safe-area-inset-left));
+    right: auto;
+    /* 42 px clears the pill buttons of the touch pad top bar. */
+    top: calc(max(10px, env(safe-area-inset-top)) + 42px);
+    bottom: auto;
+    width: min(58vw, 340px);
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 10px;
+  }
+}
 `;
 
 /** Add the style sheet one time, whatever the number of displays. */
@@ -848,9 +909,12 @@ export function createHud(parent: HTMLElement): Hud {
   const context: HudContext = { throttleMoving: false, throttleRising: false };
 
   let shownVisible = true;
+  /** The last value written to the class. A repeat costs no layout pass. */
+  let shownDebugPanels = true;
 
   const api: Hud = {
     visible: true,
+    debugPanelsVisible: true,
 
     update(s: TelemetrySample, aircraft: AircraftReadout): void {
       if (api.visible !== shownVisible) {
@@ -858,6 +922,11 @@ export function createHud(parent: HTMLElement): Hud {
         root.style.display = shownVisible ? '' : 'none';
       }
       if (!shownVisible) return;
+
+      if (api.debugPanelsVisible !== shownDebugPanels) {
+        shownDebugPanels = api.debugPanelsVisible;
+        root.classList.toggle('hfs-hud-free', !shownDebugPanels);
+      }
 
       const change = aircraft.throttle - lastThrottle;
       lastThrottle = aircraft.throttle;
