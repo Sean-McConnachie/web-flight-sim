@@ -369,7 +369,8 @@ how you estimated it.
 | Aspect ratio | 7.21 | derived |
 | Length | 10.60 m | firm |
 | Height | 3.83 m | firm, corrected, see note |
-| Sweep at quarter chord | 18.5 deg | firm |
+| Sweep at leading edge | 18.5 deg | firm, corrected, see note |
+| Sweep at quarter chord | 15.72 deg | derived, see note |
 | Root airfoil | NACA 00011-0.825-35 | firm |
 | Tip airfoil | NACA 00009-1.1-40 | firm |
 | Empty mass | 3795 kg | firm |
@@ -434,6 +435,51 @@ The lesson for this table: a confidence mark is only as good as its source. If
 a number here fights a measurement, check the number before you change the
 model.
 
+### Note on the sweep, and the third wrong number in this table
+
+This table gave 18.5 degrees as the sweep at the QUARTER CHORD and marked it
+firm. That was WRONG. The 18.5 degrees is the sweep of the LEADING EDGE.
+
+The sources agree on the leading edge. Wikipedia states a "shallow leading edge
+sweep of 18.5 degrees" and cites Loftin, "Quest for Performance", NASA SP-468.
+The design history of the same article gives the same angle. It says that
+Messerschmitt swept the outer wing to 18.5 degrees on 1 March 1940. The reason
+was the heavier engine, which moved the center of gravity aft. That paragraph
+then contrasts the panel with the inboard LEADING EDGE, which stayed straight
+until the sixth prototype. No source gives 18.5 degrees at the quarter chord.
+
+The plan form then fixes the quarter chord angle. The chord falls from 2.40 m at
+the root to 1.07 m at the tip over a 6.255 m semi span, so
+
+    tan(sweep at c/4) = tan(18.5 deg) - 0.25 * (2.40 - 1.07) / 6.255
+                      = 0.33460 - 0.05316 = 0.28144,  that is 15.72 degrees.
+
+The two angles differ by 2.8 degrees. Reading 18.5 degrees as a quarter chord
+angle would put the leading edge at 21.2 degrees, which no source gives.
+
+Here is what the error cost. The model put the center of gravity at 25 percent
+of the mean aerodynamic chord. It found that point with the wrong angle, so the
+wing and the balance disagree.
+
+Hold the wing root quarter chord at station 4.85 m. The correct sweep then puts
+25 percent of the mean chord at station 5.618 m. That point sits 0.145 m AHEAD
+of the center of gravity the model carries. Measured at 6000 m, the static
+margin falls from +3.4 percent of the mean chord to -4.2 percent. The aircraft
+would be statically UNSTABLE.
+
+Only two numbers can take up the 0.145 m. The model moves the wing root station
+from 4.85 m to 4.992 m and holds the center of gravity. The root station was an
+estimate read off a three view. Three other places fix the center of gravity.
+They are the mass model, the render model, and a unit test.
+
+The static margin at sea level then reads 4.80 percent of the mean chord. It
+read 5.13 percent before the correction.
+
+The lesson repeats the one below. Three numbers marked firm in this table have
+now been wrong. They are the height, the stall speed, and the reference line of
+the sweep. A number is only as good as the source it names. A firm mark on an
+angle must also say WHERE the angle sits.
+
 ### Note on the stall speed
 
 The widely repeated figure of 175 km/h is NOT a stall speed. It is the
@@ -449,9 +495,18 @@ At 6400 kg the wing loading is 2894 N/m2. The model gives:
 
 | Configuration | Maximum lift coefficient | Stall speed |
 | --- | --- | --- |
-| Clean | 1.540 at 20.1 deg | 199 km/h |
-| Takeoff flap, 20 deg | 1.647 | 193 km/h |
-| Landing flap, 50 deg | 1.801 at 19.5 deg | 184 km/h |
+| Clean | 1.583 at 20.3 deg | 198 km/h |
+| Takeoff flap, 20 deg | 1.673 at 20.0 deg | 191 km/h |
+| Landing flap, 50 deg | 1.797 at 19.5 deg | 182 km/h |
+
+Bead b65 moved this table. The sweep correction leaves every strip a higher
+normal dynamic pressure. The wing then carries 2.8 percent more peak lift, and
+the landing stall speed fell to 179 km/h. That is below the handbook floor.
+
+The model answers with the flap. The peak lift the flap adds to its own section
+comes down from 1.2 to 1.1. Hoerner gives 1.0 to 1.3 for a slotted flap, and a
+plain slot with no Fowler travel belongs at the low end. The landing row then
+returns to the 182 km/h it held before the correction.
 
 The landing number sits inside the handbook band of 180 to 202 km/h. Bead b33
 must test against the handbook band, not against 175 km/h. A model that stalls

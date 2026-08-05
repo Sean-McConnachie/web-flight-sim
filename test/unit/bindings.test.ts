@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import type { AxisName, ButtonName, GamepadReader } from '@/input/gamepad';
 import type { KeyboardReader } from '@/input/keyboard';
 import type { ControlInput, InputSystem } from '@/input/bindings';
-import { createInputSystem, DEFAULT_BINDINGS } from '@/input/bindings';
+import {
+  FULL_AUTHORITY_PRESSURE,
+  MIN_CONTROL_AUTHORITY,
+  controlAuthority,
+  createInputSystem,
+  DEFAULT_BINDINGS,
+} from '@/input/bindings';
 
 /**
  * A fake gamepad and a fake keyboard. The test writes the hardware by hand, so
@@ -354,6 +360,79 @@ describe('the wheel brakes', () => {
     for (let i = 0; i < 60; i += 1) rig.frame();
     expect(rig.input.state.throttle).toBeGreaterThan(0.05);
     expect(rig.input.state.brakeRight).toBe(0);
+  });
+
+  it('the Z key brakes the left wheel alone and the C key brakes the right', () => {
+    const rig = createRig();
+    rig.keys.setKey('KeyZ', true);
+    let state = rig.frame();
+    expect(state.brakeLeft).toBe(1);
+    expect(state.brakeRight).toBe(0);
+
+    rig.keys.setKey('KeyZ', false);
+    rig.keys.setKey('KeyC', true);
+    state = rig.frame();
+    expect(state.brakeLeft).toBe(0);
+    expect(state.brakeRight).toBe(1);
+  });
+
+  it('the two brake keys work in the air and at full power, unlike the triggers', () => {
+    // A key drives nothing else, so no taxi rule gates it. The pilot needs the
+    // differential brake through the whole landing roll, not only at idle.
+    const rig = createRig();
+    rig.onGround.value = false;
+    rig.keys.setKey('KeyZ', true);
+    expect(rig.frame().brakeLeft).toBe(1);
+  });
+
+  it('the B key still brakes both wheels together', () => {
+    const rig = createRig();
+    rig.keys.setKey('KeyB', true);
+    const state = rig.frame();
+    expect(state.brakeLeft).toBe(1);
+    expect(state.brakeRight).toBe(1);
+  });
+});
+
+describe('the control authority', () => {
+  it('a full command reaches the full travel up to 10 kPa', () => {
+    expect(controlAuthority(0)).toBe(1);
+    expect(controlAuthority(FULL_AUTHORITY_PRESSURE)).toBe(1);
+  });
+
+  it('the travel falls as one over the dynamic pressure, as a stick force does', () => {
+    expect(controlAuthority(2 * FULL_AUTHORITY_PRESSURE)).toBeCloseTo(0.5, 9);
+    expect(controlAuthority(4 * FULL_AUTHORITY_PRESSURE)).toBeCloseTo(0.25, 9);
+  });
+
+  it('the travel never falls under the floor, so a dive is always recoverable', () => {
+    expect(controlAuthority(1e9)).toBe(MIN_CONTROL_AUTHORITY);
+  });
+
+  it('the three flight axes lose travel at speed and the look axes do not', () => {
+    // 40 kPa is 900 km/h of equivalent airspeed. See FULL_AUTHORITY_PRESSURE.
+    const pad = createFakeGamepad();
+    const keys = createFakeKeyboard();
+    const input = createInputSystem({
+      gamepad: pad,
+      keyboard: keys,
+      dynamicPressure: () => 40000,
+    });
+    pad.setAxis('leftY', 1);
+    pad.setAxis('leftX', 1);
+    pad.setAxis('rightTrigger', 1);
+    pad.setAxis('rightY', -1);
+    input.poll(FRAME);
+    expect(input.state.pitch).toBeCloseTo(0.25, 9);
+    expect(input.state.roll).toBeCloseTo(0.25, 9);
+    expect(input.state.yaw).toBeCloseTo(0.25, 9);
+    expect(input.state.lookPitch).toBeCloseTo(1, 9);
+  });
+
+  it('a parked aircraft keeps every degree of every surface', () => {
+    const rig = createRig();
+    rig.pad.setAxis('leftY', 1);
+    expect(rig.frame().pitch).toBeCloseTo(1, 9);
   });
 });
 

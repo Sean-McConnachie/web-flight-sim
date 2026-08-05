@@ -45,12 +45,26 @@
  * CONVENTIONS section 2 says the model holds SI units and only src/ui converts.
  * Every conversion here goes through src/math/units.ts.
  *
+ *
+ * 5. THE ENGINE MESSAGE
+ *
+ * The engine model writes one line for the pilot on each engine. During a start
+ * the line names the next action. After a refused light it gives the reason,
+ * such as a wet tail pipe or a fuel cock that is still shut. Without it an
+ * engine that will not light looks like a fault of the simulator.
+ *
+ * The line stands across the TOP OF THE SYSTEMS BAR, directly over the ENG 1
+ * and ENG 2 cells it belongs to. Both engines run the same procedure, so both
+ * usually carry the same words. `engineMessageText` therefore prints each
+ * DISTINCT line one time and marks it with the engines that raised it.
+ *
  * This file may touch the DOM. CONVENTIONS section 4 allows that under src/ui.
  * It holds no physics.
  */
 
 import { kelvinToCelsius, msToKmh, toDeg } from '@/math/units';
 import { DANGER_BAND_RPM, TURBINE_INLET_TEMPERATURE_LIMIT } from '@/aircraft/me262/engine';
+import { LIMIT_LOAD_NEGATIVE, LIMIT_LOAD_POSITIVE } from '@/aircraft/me262/limits';
 import { GEAR_LIMIT_SPEED, flapLimitSpeed } from '@/aircraft/me262/systems';
 import type { AttitudeAngles, TelemetrySample } from '@/ui/debug-overlay';
 import { attitudeAngles, fixedWidth } from '@/ui/debug-overlay';
@@ -70,6 +84,28 @@ export interface EngineReadout {
   readonly gasTemperature: number;
   /** Name of the engine state, such as "running". The display only prints it. */
   readonly state: string;
+  /**
+   * BEAD b38. One line for the pilot, or empty.
+   *
+   * src/aircraft/me262/engine.ts writes it. It names the next step of the start
+   * procedure, or it gives the exact reason a light was refused. The display
+   * only prints it. See part 5 below.
+   */
+  readonly message: string;
+}
+
+/**
+ * The two load factor bounds the airframe holds NOW, in g.
+ *
+ * src/aircraft/me262/limits.ts owns them. They are not constants: the bound
+ * falls as the aircraft gets heavier, and it falls again after the wing takes a
+ * permanent set or a fire weakens a panel.
+ */
+export interface LoadLimitReadout {
+  /** Positive load factor with no permanent set. */
+  readonly limitPositive: number;
+  /** Negative load factor with no permanent set. */
+  readonly limitNegative: number;
 }
 
 /**
@@ -88,6 +124,8 @@ export interface AircraftReadout {
   readonly flapPosition: number;
   /** Rounds of 30 mm left, over all four guns. */
   readonly rounds: number;
+  /** The load factor bounds of the airframe as it is now. */
+  readonly loadLimits: LoadLimitReadout;
 }
 
 /** What the level functions need and no single frame value can carry. */
@@ -152,11 +190,9 @@ const MIN_LIVE_RPM = 1200;
 const GAS_TEMPERATURE_CAUTION = 1060; // K
 
 /**
- * Load factor limits. Source: CONVENTIONS section 8, confidence estimated.
- * The caution sits at 85 percent of each limit.
+ * The caution band of the load factor sits at 85 percent of the limit that is
+ * live now. The limits themselves come from the aircraft. See loadFactorLevel.
  */
-const LOAD_LIMIT_POSITIVE = 7;
-const LOAD_LIMIT_NEGATIVE = -3;
 const LOAD_CAUTION_FRACTION = 0.85;
 
 /**
@@ -234,11 +270,29 @@ export function flapSpeedLevel(eas: number, flapPosition: number): HudLevel {
   return 'normal';
 }
 
-/** Level of the load factor against the airframe limits. */
-export function loadFactorLevel(n: number): HudLevel {
-  if (n > LOAD_LIMIT_POSITIVE || n < LOAD_LIMIT_NEGATIVE) return 'warning';
-  if (n > LOAD_LIMIT_POSITIVE * LOAD_CAUTION_FRACTION) return 'caution';
-  if (n < LOAD_LIMIT_NEGATIVE * LOAD_CAUTION_FRACTION) return 'caution';
+/**
+ * Level of the load factor against the airframe limits.
+ *
+ * BEAD b69. THE TWO BOUNDS ARE ARGUMENTS, NOT CONSTANTS. A structure carries a
+ * load in newtons, so the limit load FACTOR falls as the aircraft gets heavier:
+ * it is 7.00 g at the loaded mass of 6396 kg and 6.28 g at the maximum takeoff
+ * mass of 7130 kg. It falls another 30 percent once the wing has taken a
+ * permanent set, and again when a fire weakens a panel.
+ * src/aircraft/me262/limits.ts computes all of that and holds the answer in
+ * `structure.state.limits`. A warning against a fixed +7 and -3 would tell a
+ * heavy or a bent aircraft that it is safe while its wing bends.
+ *
+ * The two defaults are the bounds of the SOUND airframe at the design mass, so
+ * a caller with no aircraft still gets the published pair.
+ */
+export function loadFactorLevel(
+  n: number,
+  limitPositive: number = LIMIT_LOAD_POSITIVE,
+  limitNegative: number = LIMIT_LOAD_NEGATIVE,
+): HudLevel {
+  if (n > limitPositive || n < limitNegative) return 'warning';
+  if (n > limitPositive * LOAD_CAUTION_FRACTION) return 'caution';
+  if (n < limitNegative * LOAD_CAUTION_FRACTION) return 'caution';
   return 'normal';
 }
 
@@ -413,7 +467,8 @@ export const HUD_FIELDS: readonly HudField[] = [
     width: 5,
     block: 'flight',
     read: (s) => s.loadFactor,
-    level: (s) => loadFactorLevel(s.loadFactor),
+    level: (s, a) =>
+      loadFactorLevel(s.loadFactor, a.loadLimits.limitPositive, a.loadLimits.limitNegative),
   },
   {
     key: 'heading',
@@ -518,7 +573,8 @@ export const HUD_ALERTS: readonly HudAlert[] = [
   {
     key: 'load',
     text: 'G LIMIT',
-    level: (s) => loadFactorLevel(s.loadFactor),
+    level: (s, a) =>
+      loadFactorLevel(s.loadFactor, a.loadLimits.limitPositive, a.loadLimits.limitNegative),
   },
   {
     key: 'mach',
@@ -531,6 +587,36 @@ export const HUD_ALERTS: readonly HudAlert[] = [
     level: (_s, a) => fuelLevel(a.fuelMass),
   },
 ];
+
+/**
+ * Builds the engine message block. See part 5 of the module comment.
+ *
+ * Each DISTINCT message prints one time, on its own line, with the numbers of
+ * the engines that raised it in front of it. Two engines that run the same
+ * start step therefore give one line and not two. An engine with an empty
+ * message adds nothing, and an aircraft with nothing to say returns an empty
+ * string.
+ *
+ * The function is pure, so a test drives it with no DOM.
+ */
+export function engineMessageText(engines: readonly EngineReadout[]): string {
+  const texts: string[] = [];
+  const owners: string[] = [];
+  for (let i = 0; i < engines.length; i++) {
+    const message = engines[i].message;
+    if (message === '') continue;
+    const found = texts.indexOf(message);
+    if (found < 0) {
+      texts.push(message);
+      owners.push(String(i + 1));
+    } else {
+      owners[found] += ` ${i + 1}`;
+    }
+  }
+  const lines: string[] = [];
+  for (let i = 0; i < texts.length; i++) lines.push(`ENG ${owners[i]}  ${texts[i]}`);
+  return lines.join('\n');
+}
 
 /** Find one cell by its key. The unit test uses it. */
 export function findHudField(key: string): HudField | undefined {
@@ -595,7 +681,12 @@ const CSS = `
   border-radius: 4px;
 }
 .hfs-hud-systems {
-  left: 12px;
+  /* BEAD b68. The debug overlay of src/ui/debug-overlay.ts owns the LEFT edge.
+     Its rows are a grid of 78, 78 and 44 px inside 10 px of padding and a 1 px
+     border, so the panel is 222 px wide and it stands at left 12 px. The bar
+     therefore starts at 246 px and keeps the same 12 px gutter the panel has.
+     Without this the words ENG 1 and OFF draw over DENSITY and TEMP. */
+  left: 246px;
   /* The telemetry chart of bead b26 owns the bottom right corner. It is 440 px
      wide, so the bar stops short of it and the two never overlap. */
   right: 448px;
@@ -635,6 +726,17 @@ const CSS = `
   display: block;
   color: #ff6b5e;
   border: 1px solid rgba(255, 107, 94, 0.85);
+}
+.hfs-hud-message {
+  /* The line stands across the whole bar, over the two engine columns. */
+  grid-column: 1 / -1;
+  display: none;
+  margin-bottom: 4px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(120, 200, 150, 0.25);
+  color: #ffc857;
+  /* The block carries one line per engine group, so it must keep the breaks. */
+  white-space: pre-line;
 }
 .hfs-hud-cell {
   display: grid;
@@ -709,6 +811,11 @@ export function createHud(parent: HTMLElement): Hud {
   const systems = makeDiv('hfs-hud hfs-hud-systems', root);
   const alerts = makeDiv('hfs-hud hfs-hud-alerts', root);
 
+  // The engine message stands first inside the systems bar, so it sits over the
+  // ENG 1 and ENG 2 cells. See part 5 of the module comment.
+  const message = makeDiv('hfs-hud-message', systems);
+  let lastMessage = '';
+
   const rows: Row[] = [];
   for (const field of HUD_FIELDS) {
     const row = makeDiv('hfs-hud-cell', field.block === 'flight' ? flight : systems);
@@ -762,6 +869,15 @@ export function createHud(parent: HTMLElement): Hud {
       }
       context.throttleMoving = moveHold > 0;
       context.throttleRising = context.throttleMoving && rising;
+
+      // A write to textContent costs a layout pass, and the message holds for
+      // seconds at a time, so only a change writes.
+      const text = engineMessageText(aircraft.engines);
+      if (text !== lastMessage) {
+        lastMessage = text;
+        message.textContent = text;
+        message.style.display = text === '' ? 'none' : 'block';
+      }
 
       for (const row of rows) {
         const field = row.field;

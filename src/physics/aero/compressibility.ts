@@ -33,10 +33,11 @@
  *   moment. THICKNESS_MACH_RELIEF and WAVE_DRAG_THICKNESS_EXPONENT give a thin
  *   section its later and smaller shock.
  *
- * Sweep. The Me-262 carries 18.5 degrees of sweep at the quarter chord. Simple
- * sweep theory says that only the velocity component normal to the quarter chord
- * line drives the section pressures, so every shock driven effect answers to the
- * normal Mach number M cos(sweep), not to the free stream Mach number.
+ * Sweep. The Me-262 carries 18.5 degrees of sweep at the LEADING EDGE, which is
+ * 15.72 degrees at the quarter chord. Simple sweep theory says that only the
+ * velocity component normal to the quarter chord line drives the section
+ * pressures, so every shock driven effect answers to the normal Mach number
+ * M cos(sweep), not to the free stream Mach number.
  *
  * What sweep relieves: the critical Mach number, the wave drag rise, the
  * aerodynamic center shift, the loss of control power, and the loss of peak
@@ -86,10 +87,20 @@ export interface MachCorrection {
   clMaxScale: number;
 }
 
-// The quarter chord sweep of the Me-262 wing. Source: docs/CONVENTIONS.md
-// section 8, confidence: firm. Every Mach anchor below is a free stream value at
-// this sweep.
-export const REFERENCE_SWEEP = 18.5 * DEG; // rad
+// The QUARTER CHORD sweep of the Me-262 wing. Every Mach anchor below is a free
+// stream value at this sweep.
+//
+// BEAD b65 CHANGED THIS NUMBER FROM 18.5 TO 15.72 DEGREES AND THE WING FEELS
+// NOTHING. The published 18.5 degrees is the sweep of the LEADING EDGE, not of
+// the quarter chord. See the note on the sweep in docs/CONVENTIONS.md section 8.
+// The anchors are free stream values AT THIS SWEEP, so the wing reads every
+// table at the free stream Mach number whatever this angle is, and only the
+// surfaces with a DIFFERENT sweep move. The tailplane sweeps 12 degrees, so its
+// shock used to arrive 3.1 percent early in free stream terms and now arrives
+// 1.6 percent early. The fin sweeps 30.7 degrees and keeps a little more relief.
+// Source: docs/CONVENTIONS.md section 8, derived from the firm leading edge
+// sweep and the firm span and area.
+export const REFERENCE_SWEEP = 15.72 * DEG; // rad
 
 // The exponent of the sweep relief. A value of 1 gives full simple sweep theory.
 // A value of 0 removes the relief. Bead b33 can lower it if the model reaches
@@ -138,8 +149,8 @@ export const WAVE_DRAG_THICKNESS_EXPONENT = 5 / 3;
 // speed is Mach 0.764. The drag rise must stay clear of that point, or the
 // aircraft cannot reach its published speed. An onset at Mach 0.78 leaves a
 // margin of 0.016 in Mach. The onset also agrees with the section: an 11 percent
-// symmetric section at low lift has a critical Mach near 0.75, and 18.5 degrees
-// of sweep raise that to 0.79 in free stream terms.
+// symmetric section at low lift has a critical Mach near 0.75, and the 15.72
+// degrees of quarter chord sweep raise that to 0.78 in free stream terms.
 // Confidence: derived from firm speed data.
 export const CRITICAL_MACH = 0.78;
 
@@ -226,6 +237,70 @@ export const WAVE_DRAG_CD: readonly number[] = [
 // Source: the transonic aerodynamic center travel of measured swept wing
 // aircraft, and supersonic thin airfoil theory for the mid chord limit.
 // Confidence: estimate, anchored on the firm onset Mach number.
+//
+//
+// THIS TABLE IS AN AIRCRAFT LEVEL LUMPED PARAMETER. IT IS NOT A SECTION
+// MEASUREMENT, AND NO MEASURED SECTION MOVES THIS FAR. READ BEAD b66.
+//
+// What the measured section does. NACA TN 3501, Nelson and McDevitt, June 1955,
+// tested 22 rectangular NACA 63A0XX wings on the Ames transonic bump from Mach
+// 0.40 to 1.10. Its figure 16 gives dCm/dCL about the quarter chord, so the
+// aerodynamic center sits at 0.25 - dCm/dCL. For the aspect ratio 6 wing with
+// the 10 percent section, which is the closest model in the report to this wing:
+//
+//   Mach 0.40 to 0.80   dCm/dCL near +0.01, so the center sits at 0.24 c
+//   Mach 0.85           dCm/dCL near -0.07, so the center sits at 0.32 c
+//   Mach 0.90           dCm/dCL near +0.22, a MOMENT REVERSAL, center at 0.03 c
+//   Mach 0.95 to 1.10   dCm/dCL near -0.14, so the center sits at 0.39 c
+//
+// So the real section travels about 0.07 chord by Mach 0.85, it never reaches
+// half chord anywhere in the tested range, and on the way it swings sharply
+// FORWARD near Mach 0.90. This table asks for 0.25 chord of travel by Mach 0.85,
+// monotone aft. The comparison is worse than the ratio of 3.6 those two numbers
+// give, because TN 3501 tested an UNSWEPT wing, so its Mach number is a normal
+// Mach number. At a free stream Mach of 0.85 the sweep of this wing leaves a
+// normal Mach of 0.818, and TN 3501 reads no section travel at all there.
+//
+// WHERE THE WHOLE AIRCRAFT ANSWER COMES FROM, MEASURED. Between Mach 0.78 and
+// Mach 0.86 at 8000 m the neutral point of the model moves from station 5.774 m
+// to station 6.215 m, which is 0.441 m, or 0.242 of the mean aerodynamic chord.
+// That travel splits as
+//
+//   0.416 m   94.3 percent   the section shift on the WING strips
+//   0.012 m    2.7 percent   the section shift on the TAILPLANE strips, which
+//                            lengthens the tail arm
+//   0.013 m    3.0 percent   everything else
+//
+// The last row was measured by flattening this table to 0.25 everywhere, which
+// leaves 0.014 m of travel. So the model builds the whole of its Mach tuck out
+// of the section shift, and almost nothing out of the parts a real aircraft uses.
+//
+// WHY THAT IS A DEFECT EVEN THOUGH THE TOTAL IS RIGHT. The travel of 0.242 chord
+// sits inside the published 0.15 to 0.25 chord band for a swept wing aircraft,
+// and test/flight/mach.test.ts measures the tuck onset at 0.825 against the
+// documented 0.83. The total is not the question. The split is. On a real
+// aircraft most of the travel comes from the tail: the tailplane meets its own
+// shock, loses lift curve slope and dynamic pressure, and the wake behind a wing
+// that is losing lift stops turning the flow down, so the downwash slope falls
+// and the tail meets more angle. This model has none of that working. Measured
+// over the same Mach range, the downwash slope d(epsilon)/d(alpha) RISES from
+// 0.550 to 0.555, which is the wrong way, the tail dynamic pressure ratio holds
+// at 0.920 exactly, and the lift curve slope of the tailplane falls by 1.2
+// percent. Three effects that should carry the tuck carry none of it.
+//
+// WHAT THAT COSTS. A model that gets the right total from the wrong parts drifts
+// when anything near it changes. Any bead that touches the tail arm, the tail
+// area, the tail section, the downwash model or the wake will move the tuck by
+// the wrong amount, because the tuck does not answer to any of them here.
+//
+// WHY THE TABLE STILL STANDS. Correcting the split is not a change to this
+// table. It needs a Mach dependent downwash slope and a tail dynamic pressure
+// that falls through the drag rise, both of which live in
+// src/physics/aero/downwash.ts, and then a fresh fit of this table against the
+// firm tuck onset. Bead b66 was asked to measure the split and to leave the
+// total alone unless the evidence said the total was wrong. The evidence says
+// the total is right and the parts are wrong. The measurement is written down
+// here so that the next bead starts from it.
 export const AC_SHIFT_MACH: readonly number[] = [0.78, 0.8, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 1.0];
 export const AC_SHIFT_X: readonly number[] = [
   0.25, 0.29, 0.36, 0.43, 0.48, 0.5, 0.5, 0.5, 0.5,
@@ -234,10 +309,29 @@ export const AC_SHIFT_X: readonly number[] = [
 // Control effectiveness. A shock ahead of the hinge line cuts the pressure the
 // surface can change, so the stick moves the aircraft less and less.
 //
-// The factor reaches 0.35 at Mach 0.86. The elevator loses its authority at the
-// same Mach number where the tuck needs it most. That is the trap the Me-262
-// pilots met. Confidence: estimate.
-export const CONTROL_MACH: readonly number[] = [0.75, 0.78, 0.8, 0.82, 0.84, 0.86, 0.9, 1.0];
+// The elevator loses its authority at the same Mach number where the tuck needs
+// it most. That is the trap the Me-262 pilots met. Confidence: estimate.
+//
+// WHY THESE ANCHORS ARE NOT ROUND NUMBERS. THIS IS THE ONE TABLE THAT DOES NOT
+// BELONG TO THE WING. The anchor of the fit is the ELEVATOR, and the elevator
+// sits on the TAILPLANE, which sweeps 12 degrees and carries a 9 percent
+// section. Every anchor here is still a free stream value at the reference
+// sweep, so the tail, with its own sweep and thickness, meets each one a little
+// later than the wing does.
+//
+// Bead b65 corrected the reference sweep from 18.5 to 15.72 degrees. That gave
+// EVERY surface with a different sweep a new place on the Mach scale, and the
+// tail gained 1.5 percent. Measured, the elevator kept 0.624 of its low speed
+// power at Mach 0.86 where it kept 0.435 before, which is outside the band the
+// flight test holds. The anchors below therefore carry the same factor back:
+// each one is the value it held before b65 times cos(18.5 deg) / cos(15.72 deg),
+// which is 0.9852. The elevator then loses the same authority at the same free
+// stream Mach number as before, which is the documented behavior and the whole
+// point of the fit. The ailerons and the rudder read the table 1.5 percent
+// earlier than they did, and no published measurement holds either one.
+export const CONTROL_MACH: readonly number[] = [
+  0.7389, 0.7684, 0.7881, 0.8079, 0.8276, 0.8473, 0.8867, 0.9852,
+];
 export const CONTROL_SCALE: readonly number[] = [1.0, 0.95, 0.88, 0.76, 0.58, 0.35, 0.2, 0.15];
 
 // Peak lift against Mach. The shock separates the boundary layer behind it, so

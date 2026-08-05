@@ -1241,6 +1241,13 @@ function buildPedals(context: BuildContext, pivots: Partial<Me262CockpitPivots>)
  * The two hood hoops belong to the sliding half of the hood. They hang on the
  * cockpit root here, because the hood stays shut in this build. A bead that
  * opens the hood must move them onto the canopy pivot of the exterior model.
+ *
+ * THERE IS NO INTERIOR MEMBER AT STATION 3.71. BEAD b72. An earlier build
+ * carried one there, because a workaround hid the exterior shell and the
+ * interior had to stand in for the hoops the pilot could not see. Bead 37m
+ * opened that shell, so windscreen-hoop-1 at 3.72 and canopy-hoop-0 at 3.76 are
+ * on screen again. A third member 1 cm from the first one reads as one heavy
+ * arch and hides the view over the nose. The exterior hoops now do that job.
  */
 function buildHoodFrame(context: BuildContext): void {
   const frame = new Object3D();
@@ -1250,7 +1257,6 @@ function buildHoodFrame(context: BuildContext): void {
   const inset = 0.014;
   const members: Array<{ t: number; radius: number; name: string }> = [
     { t: 3.32, radius: 0.026, name: 'windscreen-bow' },
-    { t: 3.71, radius: 0.023, name: 'windscreen-aft-bow' },
     { t: 4.45, radius: 0.018, name: 'hood-hoop-mid' },
     { t: 5.0, radius: 0.018, name: 'hood-hoop-aft' },
   ];

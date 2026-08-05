@@ -153,20 +153,67 @@ export const FUEL_HEATING_VALUE = 42.8e6; // J/kg
  */
 export const FUEL_CAPACITY = 2133; // kg
 
-/** Riedel starter output, 10 hp in the intake bullet. Source: firm. */
+/**
+ * Riedel starter output, 10 hp in the intake bullet.
+ *
+ * The Riedel RBA is a two cylinder two stroke petrol engine of 10 hp at 6000
+ * rpm. It sits in the intake bullet and drives the rotor through a reduction
+ * gear and a dog clutch. Source: Jumo 004 B-1 data sheet, confidence: firm.
+ */
 export const STARTER_POWER = 7457; // W
 
-/** Starter torque at low rotor speed. The value gives 6.8 kW at 500 rpm, which
- *  matches the 10 hp of the Riedel through its gearbox. ESTIMATED, medium. */
+/**
+ * Torque limit of the Riedel drive at a low rotor speed.
+ *
+ * A piston engine on a gearbox delivers close to CONSTANT POWER once it is on
+ * its torque curve, so the starter torque is STARTER_POWER / omega. That value
+ * runs away as the rotor speed falls to zero, and the shaft, the gear and the
+ * dog clutch cannot pass it, so the drive is torque limited below 550 rpm.
+ *
+ * THE EARLIER MODEL WAS A LINEAR FADE TO ZERO AT 1200 RPM. It put the starter
+ * torque at 43 N m at 800 rpm, which is 3.6 kW, and the motoring drag at that
+ * speed is also 3.6 kW. The surplus was therefore zero exactly where the pilot
+ * needs the rotor to arrive, so the crank approached 800 rpm along an asymptote
+ * and took 15 seconds to reach it. The constant power form gives 89 N m and
+ * 7.5 kW at the same speed, which is the published output of the machine.
+ *
+ * ESTIMATED, confidence: medium. The value is the torque the drive passes at
+ * the speed where the constant power curve reaches it.
+ */
 export const STARTER_MAX_TORQUE = 130; // N m
 
-/** Rotor speed at which the starter torque falls to zero. The value is chosen so
- *  that the starter alone holds the rotor near STARTER_TARGET_RPM against the
- *  compressor and the bearings. ESTIMATED, confidence: low. */
-export const STARTER_ZERO_TORQUE_RPM = 1200;
+/**
+ * Rotor speed at which the Riedel dog clutch lets go.
+ *
+ * The pilot holds the starter handle THROUGH the light off and releases it at
+ * 1800 to 2000 rpm. The Riedel alone cannot reach that speed: constant power
+ * against the motoring drag balances near 1190 rpm. The flame and the starter
+ * together carry the rotor the rest of the way, which is what the handbook
+ * describes.
+ * Source: "Pilot's Handbook for Me-262 A-1", Wright Field F-SU-1111-ND,
+ * starting procedure step 7 and step 8. Confidence: firm.
+ */
+export const STARTER_CUTOUT_RPM = 2000;
 
-/** The Riedel starter drives the rotor toward this speed before light off. */
+/**
+ * Rotor speed at which the pilot lights the fuel.
+ *
+ * The handbook: "When jet unit has reached 700 to 800 rpm, press ignition
+ * button on right side of throttle and hold." Confidence: firm.
+ */
 export const STARTER_TARGET_RPM = 800;
+
+/**
+ * Rotor speed at which a lit engine accelerates on its own flame.
+ *
+ * The handbook releases the starter handle here, so this is the speed the
+ * machine reached with the starter in and the flame lit. Below it the pilot
+ * must keep cranking, because the turbine alone makes less torque than the
+ * compressor absorbs.
+ * Source: F-SU-1111-ND step 7, "The speed will increase to 1800 to 2000 rpm at
+ * this time", and step 8, "Release starter handle". Confidence: firm.
+ */
+export const SELF_SUSTAIN_RPM = 1800;
 
 // ---------------------------------------------------------------------------
 // Gas path constants.
@@ -301,11 +348,44 @@ export const SURGE_FUEL_AIR_LIMIT = table1d(
  *
  * The curve holds the fuel-air ratio near 0.020 through the start, which is
  * above the running line and below the surge line. ESTIMATED, confidence: low.
+ *
+ * THE ENRICHMENT HOLDS TO THE IDLE SPEED. IDLE_DROOP_RPM takes it off, not this
+ * table. An earlier form of the curve tapered back to 1 at the idle fraction of
+ * 0.345, because the lever alone must set the flow at idle and the engine has
+ * to SETTLE at 3000 rpm. That left the rotor creeping up to idle along an
+ * asymptote, and the last 800 rpm of the start took 22 seconds on its own. The
+ * governor does that job now, so the enrichment can stay in through the whole
+ * band. This is also what the handbook has the pilot do by hand: step 8 says
+ * "slowly advance throttle to 3000 rpm", so fuel above the idle stop goes in
+ * over this whole band and comes off when the rotor arrives.
  */
 const START_FUEL_SCHEDULE = table1d(
-  [0, 0.05, 0.092, 0.15, 0.2, 0.25, 0.3, 0.345, 1.0],
-  [0, 0.28, 0.51, 0.85, 1.1, 1.3, 1.2, 1.0, 1.0],
+  [0, 0.05, 0.092, 0.15, 0.2, 0.25, 0.3, 0.345],
+  [0, 0.28, 0.51, 0.85, 1.1, 1.3, 1.32, 1.32],
 );
+
+/**
+ * Idle governor droop. The start enrichment comes off over this many rpm above
+ * IDLE_RPM.
+ *
+ * The B-1 fuel control held the idle speed the same way it held the maximum
+ * speed, with a droop law on the rotor speed. Without it the only thing that
+ * can stop the start enrichment is the enrichment curve falling back to 1 at
+ * the idle speed, and an engine whose surplus torque dies as it reaches its
+ * target can only approach that target along an asymptote.
+ *
+ * THE VALUE SETS WHERE THE ENGINE SETTLES, and it is a compromise between two
+ * faults. The torque balance with no enrichment at all sits at 3046 rpm, so the
+ * engine can never settle below that. A wide droop leaves enrichment in above
+ * the balance and idles high: 150 rpm gives 3143. A narrow droop idles closer
+ * to the balance but takes the enrichment off so gently near it that the rotor
+ * creeps for a minute before it stops moving: 40 rpm was still climbing 30
+ * seconds after the start finished.
+ *
+ * The value below settles dead still at 3080 rpm within 5 seconds, which is 2.7
+ * percent above the published 3000. ESTIMATED, confidence: low.
+ */
+export const IDLE_DROOP_RPM = 80;
 
 /** Fuel valve flow against the throttle lever. The curve is convex, so the first
  *  part of the lever travel adds little fuel. The pilot needs that part of the
@@ -502,8 +582,75 @@ export const RELIGHT_MIN_SPEED = RELIGHT_MIN_RPM / WINDMILL_RPM_PER_MS; // m/s, 
 /** Highest true airspeed for a relight. Above it the flame blows out. */
 export const RELIGHT_MAX_SPEED = 250; // m/s, about 900 km/h
 
-/** The throttle must sit below this value before a relight. */
+/**
+ * The throttle must sit below this value before a COLD air start.
+ *
+ * A windmilling rotor at 1100 to 2000 rpm passes about a fifth of the airflow
+ * of a running engine, so the flow cannot swallow what an open lever asks for.
+ * The handbook air start therefore begins with the throttle closed:
+ * "(2) Throttle closed ... (6) Advance throttle slowly to idling position."
+ * Source: F-SU-1111-ND, TO START DURING FLIGHT. Confidence: firm.
+ */
 export const RELIGHT_MAX_THROTTLE = 0.05;
+
+/**
+ * Rotor speed above which the flame relights with the lever WHERE IT IS.
+ *
+ * BEAD b70. The closed throttle rule above is correct for a cold windmill
+ * start and wrong for an engine that lost its flame one second ago with the
+ * rotor still spinning near its running speed. The structural limits bead found
+ * the fault: a negative g fuel interruption in a dive put both engines out, and
+ * neither could relight for the whole dive, because the lever was open and the
+ * rotor was turning far too fast to fall into the cold start window.
+ *
+ * THE BASIS IS THE PUBLISHED 6000 RPM RULE, and it is the same physics. The
+ * handbook: "If rpm is less than 6000, any advance in throttles must be made
+ * slowly to 7000 rpm before opening wide." Above 6000 rpm the compressor
+ * already passes the air that an open lever asks for, and below it the compressor
+ * does not. A relight is one more step in the lever, so it takes the same bound.
+ * The model agrees with the handbook here. At 6000 rpm the airflow is 13.9 kg/s
+ * and a full lever asks for 0.29 kg/s of fuel, which is a fuel-air ratio of
+ * 0.021 against a surge line of 0.0265. At 3000 rpm the same lever asks for
+ * 0.065 against 0.0235, which is three times the limit.
+ *
+ * Source: "Pilot's Handbook for Me-262 A-1", F-SU-1111-ND, approach and landing
+ * note, and DANGER_BAND_RPM of this module. Confidence: firm on the rule,
+ * derived on the use of it here.
+ */
+export const HOT_RELIGHT_MIN_RPM = DANGER_BAND_RPM; // 6000
+
+/**
+ * Fuel that the airflow carries out of the chambers, for each kilogram of air.
+ *
+ * BEAD b56 item 3. An unlit engine with the cock open pools fuel in its six
+ * chambers and in the jet pipe. Nothing took that pool back out, so one hot
+ * start left the engine wet for ever: every later attempt lit the pool as well
+ * as the metered flow, ran hotter than the first attempt, and the model charged
+ * more creep damage for it. The pool also starts a jet pipe fire on hot metal,
+ * and a fire holds until the pilot shuts the engine down.
+ *
+ * The handbook drill is exactly this purge: "The tail pipe should be wiped
+ * clean of any injected fuel before repeating starting process. Otherwise a
+ * fire may start."
+ *
+ * THE VALUE HAS A CEILING AND A FLOOR, AND THEY ARE CLOSE TOGETHER.
+ *
+ * The ceiling: the purge must stay UNDER the injection at cranking speed, or a
+ * cock that the pilot opens at rest can never flood the engine at all and the
+ * fault the handbook warns about disappears from the model. The fuel schedule
+ * passes 0.016 kg/s at 400 rpm, where the rotor pumps 0.8 kg/s of air, so the
+ * ceiling is 0.019.
+ *
+ * The floor: a pool that a failed start left behind has to clear inside the
+ * time a pilot will hold the starter handle. The starter holds the rotor near
+ * 1190 rpm, where it pumps 2.3 kg/s, so this value clears the 0.19 kg of a hot
+ * start in 10 seconds and a full 0.8 kg pool in 43 seconds. The handbook drill
+ * for the full pool is a ground crew with a rag, not the starter, so the slow
+ * end is the honest one.
+ *
+ * ESTIMATED, confidence: low.
+ */
+const POOL_PURGE_PER_KG_AIR = 0.008; // kg of fuel for each kg of air
 
 /** Rotor speed governor droop. The fuel falls to a quarter over this many rpm
  *  above MAX_RPM. The B-1 fuel control held the rotor speed this way. */
@@ -531,6 +678,34 @@ export type EngineState =
   | 'stall'
   | 'flameout'
   | 'fire';
+
+/**
+ * The step of the start procedure that the engine is on. BEAD b38.
+ *
+ * EngineState says what the gas path is doing. StartPhase says where the PILOT
+ * is in the drill, which is not the same thing: the state is `lightOff` from
+ * the flame until idle, and the pilot goes through two different steps inside
+ * that one state, with a different action in each.
+ *
+ * The order follows "Pilot's Handbook for Me-262 A-1", Wright Field
+ * F-SU-1111-ND, STARTING PROCEDURES, steps 5 to 9:
+ *
+ *   5, 6  Prime the Riedel, pull the starter handle and hold.     `crank`
+ *   7     At 700 to 800 rpm press the ignition and hold. The
+ *         speed goes to 1800 to 2000 rpm.                         `light`
+ *   8     Release the starter handle, open the fuel valve and
+ *         advance the throttle to 3000 rpm.                       `accelerate`
+ *   9     At 3000 rpm release the ignition button.                `complete`
+ *
+ * `failed` covers a start or a relight that stopped. `message` says why.
+ */
+export type StartPhase =
+  | 'cold'
+  | 'crank'
+  | 'light'
+  | 'accelerate'
+  | 'complete'
+  | 'failed';
 
 export interface EngineInput {
   throttle: number; // 0..1, the pilot lever
@@ -572,10 +747,99 @@ export interface Engine {
   readonly damage: number; // 0..1, permanent
   readonly position: Vector3; // body axes, from the CG
   readonly events: EngineEvents;
+  /** BEAD b38. The step of the start drill the engine is on. */
+  readonly startPhase: StartPhase;
+  /**
+   * BEAD b38 and b56. One line for the pilot, in the imperative.
+   *
+   * While a start runs it names the step and the next action. When a start or a
+   * relight fails it says WHY and what to do about it. It is empty when the
+   * engine runs and there is nothing to say.
+   *
+   * The string only changes when the meaning changes, so a caller can compare
+   * it against its own copy and print it one time.
+   */
+  readonly message: string;
+  /** Unburned fuel in the chambers and the jet pipe, kg. A light here burns it
+   *  all at once and can start a jet pipe fire. */
+  readonly pooledFuel: number;
   update(input: EngineInput, dt: number): void;
   shutdown(): void;
   reset(): void;
 }
+
+// ---------------------------------------------------------------------------
+// What the pilot is told. BEAD b38 and BEAD b56 item 3.
+//
+// Every line is in the imperative and names the next action. A start that
+// fails says WHY it failed and what clears it, because a pilot who reads
+// "start failed" learns nothing and tries the same thing again.
+//
+// The prose follows CONVENTIONS section 1: active voice, one instruction to a
+// sentence, no contractions and no semicolons.
+// ---------------------------------------------------------------------------
+
+/** Step 5 and 6. The Riedel turns the rotor toward the light off speed. */
+const MESSAGE_CRANK = 'The starter turns the rotor. Open the fuel cock at 800 rpm.';
+
+/** Step 7. The flame is in and the starter is still engaged. */
+const MESSAGE_LIGHT = 'The engine is alight. Hold the starter until 2000 rpm.';
+
+/** Step 8. The rotor accelerates on its own flame. */
+const MESSAGE_ACCELERATE =
+  'The rotor runs on its own flame. Keep the lever at the idle stop until 3000 rpm.';
+
+/** The drill after a hot start. It is the handbook drill, in three steps. */
+const MESSAGE_HOT_START =
+  'Hot start. The gas temperature passed the limit and the turbine took damage. ' +
+  'Close the fuel cock. Crank the engine to blow the fuel out of the tail pipe.';
+
+/** The pool is gone and the pilot can try again. */
+const MESSAGE_TAIL_PIPE_CLEAR = 'The tail pipe is clear. Open the fuel cock to start again.';
+
+/** A light on a wet tail pipe burns the pool and can start a fire. */
+const MESSAGE_WET =
+  'The tail pipe holds unburned fuel. Close the fuel cock. Crank the engine to blow it out.';
+
+/** The same fact, as a warning to add to the reason a relight is held shut. */
+const WET_WARNING = 'The tail pipe also holds unburned fuel. A light there can start a fire.';
+
+/** BEAD b70. The cold air start needs the lever closed. The hot one does not. */
+const MESSAGE_LEVER_OPEN =
+  'The rotor turns too slowly to light with the lever open. Close the throttle to the idle stop.';
+
+/** No airflow and no starter. Nothing can carry a flame. */
+const MESSAGE_ROTOR_SLOW =
+  'The rotor turns too slowly to light. Engage the starter, or dive to turn the rotor faster.';
+
+/** The flame cannot hold at this airspeed. */
+const MESSAGE_TOO_FAST = 'The airspeed blows the flame out. Slow down before you light the engine.';
+
+/** The cock is shut. */
+const MESSAGE_NO_FUEL = 'No fuel reaches the burners. Open the fuel cock.';
+
+/** The cock is open and the fuel system gives nothing. The tank is dry, or
+ *  negative g uncovered the pickup. src/aircraft/me262/limits.ts owns both. */
+const MESSAGE_NO_FEED =
+  'The fuel cock is open and no fuel arrives. Hold positive g and check the tanks.';
+
+// The reason a relight is held shut, with the wet tail pipe warning on the end.
+// The strings are built at module load, because `update` allocates nothing.
+const MESSAGE_LEVER_OPEN_WET = `${MESSAGE_LEVER_OPEN} ${WET_WARNING}`;
+const MESSAGE_ROTOR_SLOW_WET = `${MESSAGE_ROTOR_SLOW} ${WET_WARNING}`;
+const MESSAGE_TOO_FAST_WET = `${MESSAGE_TOO_FAST} ${WET_WARNING}`;
+
+/** The compressor is stalled. The pilot notes say to close the lever at once. */
+const MESSAGE_SURGE = 'The compressor stalled. Close the throttle at once.';
+
+/** A fire holds until the pilot shuts the engine down. */
+const MESSAGE_FIRE = 'The engine burns. Shut it down.';
+
+/** Pool of fuel that counts as a clear tail pipe, kg. */
+const POOL_CLEAR_FUEL = 0.02;
+
+/** What stopped the last start. `message` turns it into a line for the pilot. */
+type StartFault = 'none' | 'hotStart' | 'surge';
 
 /** Returns true while a flame burns in the chambers. */
 function isLit(state: EngineState): boolean {
@@ -601,6 +865,9 @@ class Jumo004 implements Engine {
   fuelFlow = 0;
   surgeMargin = 1;
   damage = 0;
+  startPhase: StartPhase = 'cold';
+  message = '';
+  pooledFuel = 0; // kg
   readonly position: Vector3;
   readonly events: EngineEvents = {
     surgeBang: false,
@@ -630,9 +897,10 @@ class Jumo004 implements Engine {
   private bangTimer = 0; // s
   private fireTimer = 0; // s
   private poolBurnTimer = 0; // s
-  private pooledFuel = 0; // kg
   private poolBurnMass = 0; // kg
   private shutdownLatched = false;
+  /** What stopped the last start. `writeStatus` turns it into the message. */
+  private startFault: StartFault = 'none';
 
   constructor(position: Vector3) {
     this.position = position.clone();
@@ -674,6 +942,96 @@ class Jumo004 implements Engine {
 
     this.rpm = radPerSecToRpm(this.rotorSpeed);
     this.updateThrust(mach, input.altitude);
+    this.writeStatus(input);
+  }
+
+  /**
+   * Writes `startPhase` and `message`. BEAD b38 and BEAD b56 item 3.
+   *
+   * It runs one time per update and not once per substep, because the pilot
+   * reads it and the pilot does not read at 240 Hz.
+   */
+  private writeStatus(input: EngineInput): void {
+    const wet = this.pooledFuel > POOL_CLEAR_FUEL;
+
+    if (this.state === 'fire') {
+      this.startPhase = 'failed';
+      this.message = MESSAGE_FIRE;
+      return;
+    }
+    if (this.state === 'stall') {
+      this.startPhase = 'failed';
+      this.message = MESSAGE_SURGE;
+      return;
+    }
+    if (this.state === 'idle' || this.state === 'running') {
+      // The engine runs. Nothing is left of the last start to report.
+      this.startFault = 'none';
+      this.startPhase = 'complete';
+      this.message = '';
+      return;
+    }
+    if (this.state === 'lightOff') {
+      // The handbook splits this one gas path state into two pilot steps at the
+      // speed where the rotor no longer needs the starter.
+      this.startPhase = this.rpm < SELF_SUSTAIN_RPM ? 'light' : 'accelerate';
+      this.message = this.rpm < SELF_SUSTAIN_RPM ? MESSAGE_LIGHT : MESSAGE_ACCELERATE;
+      return;
+    }
+    if (this.state === 'starter') {
+      this.startPhase = 'crank';
+      // A tail pipe that still holds fuel from a failed attempt comes first.
+      // The handbook says to clear it before the pilot tries again.
+      this.message = wet ? MESSAGE_WET : MESSAGE_CRANK;
+      return;
+    }
+    if (this.state === 'off') {
+      this.startPhase = 'cold';
+      this.message = '';
+      return;
+    }
+
+    // Only `flameout` is left. Say which gate holds the relight shut.
+    this.startPhase = 'failed';
+
+    // BEAD b56 item 3. A hot start owns the message until the engine runs
+    // again, because it is the fault that damaged the turbine and it is the
+    // one the pilot must clear before anything else works. The fault only
+    // clears at idle, at a shutdown or at a reset, so a pool that empties for
+    // one moment cannot take the drill off the screen.
+    if (this.startFault === 'hotStart') {
+      this.message = wet ? MESSAGE_HOT_START : MESSAGE_TAIL_PIPE_CLEAR;
+      return;
+    }
+
+    // The gate the pilot can act on comes first, and the wet tail pipe rides
+    // on the end of it as a warning. A pilot who reads only "the tail pipe is
+    // wet" still does not know why the engine will not light.
+    if (!input.fuelCockOpen || this.shutdownLatched) {
+      this.message = MESSAGE_NO_FUEL;
+    } else if (!input.fuelAvailable) {
+      this.message = MESSAGE_NO_FEED;
+    } else if (this.rpm >= HOT_RELIGHT_MIN_RPM) {
+      // BEAD b70. The lever does not matter up here. The flame is on its way.
+      this.message = '';
+    } else if (input.throttle > RELIGHT_MAX_THROTTLE) {
+      this.message = wet ? MESSAGE_LEVER_OPEN_WET : MESSAGE_LEVER_OPEN;
+    } else if (
+      this.rpm < LIGHT_OFF_MIN_RPM ||
+      (this.rpm < RELIGHT_MIN_RPM && !input.starterEngaged)
+    ) {
+      this.message = wet ? MESSAGE_ROTOR_SLOW_WET : MESSAGE_ROTOR_SLOW;
+    } else if (input.airspeed > RELIGHT_MAX_SPEED) {
+      this.message = wet ? MESSAGE_TOO_FAST_WET : MESSAGE_TOO_FAST;
+    } else if (wet) {
+      this.message = MESSAGE_WET;
+    } else if (this.startFault === 'surge') {
+      this.message = MESSAGE_SURGE;
+    } else {
+      // Every gate is open. LIGHT_OFF_DELAY is the only thing left and it is
+      // four tenths of a second, which is too short to report.
+      this.message = '';
+    }
   }
 
   /** One internal step of the gas path, the rotor and the state machine. */
@@ -714,11 +1072,17 @@ class Jumo004 implements Engine {
       input.fuelCockOpen && input.fuelAvailable && !this.shutdownLatched;
     if (cockDelivers) {
       const lever = lookup1d(THROTTLE_FUEL_SCHEDULE, clamp(input.throttle, 0, 1));
+      // The start enrichment, with the idle governor on top of it. The droop
+      // term is 1 below the idle speed and 0 at IDLE_DROOP_RPM above it, so the
+      // enrichment carries the rotor up to idle and then comes off. Above idle
+      // the factor is exactly 1 and the lever alone sets the flow.
       const start = lookup1d(START_FUEL_SCHEDULE, speedFraction);
+      const droop = clamp(1 - (this.rpm - IDLE_RPM) / IDLE_DROOP_RPM, 0, 1);
+      const enrich = 1 + (start - 1) * droop;
       // The barostatic unit of the B-1 cuts the fuel with the inlet pressure, so
       // the fuel-air ratio holds as the aircraft climbs.
       const governor = clamp(1 - (this.rpm - MAX_RPM) / OVERSPEED_DROOP_RPM, 0.25, 1);
-      const command = lever * start * delta * governor;
+      const command = lever * enrich * delta * governor;
       // The metering valve and the fuel line take time to answer the lever.
       this.fuelFlow = lerp(this.fuelFlow, command, clamp(h / FUEL_VALVE_TIME, 0, 1));
       if (this.fuelFlow < 1e-6) {
@@ -742,6 +1106,16 @@ class Jumo004 implements Engine {
     } else {
       // Unburned fuel gathers in the chambers and in the jet pipe.
       this.pooledFuel = Math.min(MAX_POOLED_FUEL, this.pooledFuel + this.fuelFlow * h);
+      // BEAD b56 item 3. The air that the rotor pumps carries the pool back out
+      // again. Without this the engine stays wet for ever after one failed
+      // start, and every later attempt burns the same pool a second time. The
+      // handbook drill is this purge. See POOL_PURGE_PER_KG_AIR.
+      if (this.pooledFuel > 0) {
+        this.pooledFuel = Math.max(
+          0,
+          this.pooledFuel - POOL_PURGE_PER_KG_AIR * airFlow * h,
+        );
+      }
     }
     const gasFlow = airFlow + this.fuelFlow;
     const turbineInlet =
@@ -770,10 +1144,12 @@ class Jumo004 implements Engine {
 
     // --- Other torques ----------------------------------------------------
     const friction = FRICTION_TORQUE_CONSTANT + FRICTION_TORQUE_LINEAR * omega;
+    // The Riedel is a piston engine on a gearbox, so it holds close to a
+    // constant power once it is on its torque curve. See STARTER_MAX_TORQUE.
+    // The dog clutch lets go at STARTER_CUTOUT_RPM whatever the handle does.
     let starterTorque = 0;
-    if (input.starterEngaged && !this.shutdownLatched) {
-      starterTorque =
-        STARTER_MAX_TORQUE * clamp(1 - this.rpm / STARTER_ZERO_TORQUE_RPM, 0, 1);
+    if (input.starterEngaged && !this.shutdownLatched && this.rpm < STARTER_CUTOUT_RPM) {
+      starterTorque = Math.min(STARTER_MAX_TORQUE, STARTER_POWER / divisor);
     }
 
     // --- Rotor ------------------------------------------------------------
@@ -861,6 +1237,9 @@ class Jumo004 implements Engine {
         this.gasTemperature > TURBINE_INLET_TEMPERATURE_LIMIT
       ) {
         this.hotStartLatched = true;
+        // BEAD b56 item 3. The fault holds until the pilot clears the tail pipe
+        // and starts again, so the message can name it for as long as it lasts.
+        this.startFault = 'hotStart';
         events.hotStart = true;
         events.hotStartCount++;
       }
@@ -896,17 +1275,31 @@ class Jumo004 implements Engine {
         break;
 
       case 'flameout':
-        // An air start needs the throttle at idle and a windmill speed inside
-        // the relight window.
-        if (
-          cockOpen &&
-          input.throttle <= RELIGHT_MAX_THROTTLE &&
-          input.airspeed <= RELIGHT_MAX_SPEED &&
-          (this.rpm >= RELIGHT_MIN_RPM || input.starterEngaged) &&
-          this.rpm >= LIGHT_OFF_MIN_RPM &&
-          this.cockTimer >= LIGHT_OFF_DELAY
-        ) {
-          this.light(events);
+        // TWO RELIGHTS, NOT ONE. BEAD b70.
+        //
+        // A HOT relight is an engine that lost its flame with the rotor still
+        // turning above HOT_RELIGHT_MIN_RPM. The compressor is still pumping
+        // the air of a running engine, so the lever can sit anywhere and the
+        // fuel-air ratio stays inside the surge line. The airspeed does not
+        // gate it either: the combustor holds the pressure of a 6000 rpm
+        // compressor, and a flame in that does not blow out at any speed the
+        // airframe can reach. This is the case that matters after a negative g
+        // fuel interruption, where the pilot is holding the lever open in a
+        // dive and has no reason to guess that closing it is what relights.
+        //
+        // A COLD air start is a windmilling rotor. It needs the lever closed,
+        // enough rotor speed to carry a flame, and an airspeed under the value
+        // that blows one out. That is the handbook drill, and it stands.
+        if (cockOpen && this.cockTimer >= LIGHT_OFF_DELAY) {
+          const hot = this.rpm >= HOT_RELIGHT_MIN_RPM;
+          const cold =
+            input.throttle <= RELIGHT_MAX_THROTTLE &&
+            input.airspeed <= RELIGHT_MAX_SPEED &&
+            (this.rpm >= RELIGHT_MIN_RPM || input.starterEngaged) &&
+            this.rpm >= LIGHT_OFF_MIN_RPM;
+          if (hot || cold) {
+            this.light(events);
+          }
         }
         break;
 
@@ -960,6 +1353,11 @@ class Jumo004 implements Engine {
           this.state = this.rpm > IDLE_RPM * 1.05 ? 'running' : 'idle';
           this.stallTimer = 0;
         } else if (this.stallTimer >= STALL_FLAMEOUT_TIME) {
+          // A stall that ran its time put the flame out. A hot start is the
+          // worse fault of the two, so it keeps the message.
+          if (this.startFault === 'none') {
+            this.startFault = 'surge';
+          }
           this.flameOut(events);
         }
         break;
@@ -1029,6 +1427,9 @@ class Jumo004 implements Engine {
     this.pooledFuel = 0;
     this.surgeMargin = 1;
     this.thrust = 0;
+    this.startFault = 'none';
+    this.startPhase = 'cold';
+    this.message = '';
   }
 
   /** Returns the engine to the cold state. The damage clears with it. */
@@ -1051,6 +1452,9 @@ class Jumo004 implements Engine {
     this.sinceLight = -1;
     this.hotStartLatched = false;
     this.shutdownLatched = false;
+    this.startFault = 'none';
+    this.startPhase = 'cold';
+    this.message = '';
     const events = this.events;
     events.surgeBang = false;
     events.flameout = false;

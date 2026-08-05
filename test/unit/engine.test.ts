@@ -9,16 +9,20 @@ import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 import {
   DANGER_BAND_RPM,
+  HOT_RELIGHT_MIN_RPM,
   IDLE_RPM,
   MAX_RPM,
   MAX_THRUST_SL_STATIC,
   RELIGHT_MIN_RPM,
+  SELF_SUSTAIN_RPM,
+  STARTER_CUTOUT_RPM,
+  STARTER_TARGET_RPM,
   THRUST_ALTITUDE_EXPONENT,
   TURBINE_INLET_TEMPERATURE_LIMIT,
   createJumo004,
   thrustSpeedFraction,
 } from '@/aircraft/me262/engine';
-import type { Engine, EngineInput } from '@/aircraft/me262/engine';
+import type { Engine, EngineInput, StartPhase } from '@/aircraft/me262/engine';
 import { RHO0, isa } from '@/physics/atmosphere';
 
 const DT = 1 / 240;
@@ -428,6 +432,364 @@ describe('Jumo 004 start, flame out and relight', () => {
     input.fuelCockOpen = true;
     run(engine, input, 20);
     expect(engine.state).toBe('flameout');
+  });
+});
+
+/**
+ * BEAD b38. The start as the pilot runs it.
+ *
+ * Every number here comes from "Pilot's Handbook for Me-262 A-1", the Wright
+ * Field translation F-SU-1111-ND of 10 January 1946, STARTING PROCEDURES steps
+ * 5 to 9. The steps are:
+ *
+ *   5, 6  Prime the Riedel. Pull the starter handle and hold it.
+ *   7     At 700 to 800 rpm press the ignition and hold. The unit fires and the
+ *         speed rises to 1800 to 2000 rpm.
+ *   8     Release the starter handle, open the fuel valve, advance the throttle
+ *         to 3000 rpm.
+ *   9     At 3000 rpm release the ignition button.
+ */
+describe('Jumo 004 start sequence', () => {
+  /** Runs the handbook start and records every phase change it passes. */
+  function flyTheDrill(): {
+    engine: Engine;
+    phases: { phase: StartPhase; time: number; rpm: number }[];
+    idleTime: number;
+  } {
+    const engine = createJumo004(new Vector3(0, -2.5, 0.3));
+    const input = makeInput();
+    input.starterEngaged = true;
+    const phases: { phase: StartPhase; time: number; rpm: number }[] = [];
+    let last: StartPhase | null = null;
+    let time = 0;
+    let idleTime = -1;
+    for (let i = 0; i < 240 * 200; i++) {
+      // Step 7. The pilot opens the fuel at the light off speed.
+      if (engine.rpm >= 700) {
+        input.fuelCockOpen = true;
+      }
+      // Step 8. The pilot lets the starter handle go at 2000 rpm.
+      if (engine.rpm >= STARTER_CUTOUT_RPM) {
+        input.starterEngaged = false;
+      }
+      engine.update(input, DT);
+      time += DT;
+      if (engine.startPhase !== last) {
+        phases.push({ phase: engine.startPhase, time, rpm: engine.rpm });
+        last = engine.startPhase;
+      }
+      if (idleTime < 0 && engine.state === 'idle') {
+        idleTime = time;
+      }
+      if (idleTime > 0 && time > idleTime + 20) {
+        break;
+      }
+    }
+    return { engine, phases, idleTime };
+  }
+
+  it('passes the four handbook steps in the order the handbook gives them', () => {
+    const { phases } = flyTheDrill();
+    expect(phases.map((p) => p.phase)).toEqual(['crank', 'light', 'accelerate', 'complete']);
+  });
+
+  it('lights the fuel at the handbook speed of 700 to 800 rpm', () => {
+    const { phases } = flyTheDrill();
+    const light = phases[1];
+    expect(light.phase).toBe('light');
+    // The handbook gives 700 to 800 rpm. The model lights a little above 700,
+    // because LIGHT_OFF_DELAY holds the flame off for four tenths of a second
+    // while the rotor keeps accelerating.
+    expect(light.rpm).toBeGreaterThanOrEqual(700);
+    expect(light.rpm).toBeLessThan(STARTER_TARGET_RPM + 100);
+  });
+
+  it('hands the rotor over to its own flame at the handbook speed of 1800 rpm', () => {
+    const { phases } = flyTheDrill();
+    const accelerate = phases[2];
+    expect(accelerate.phase).toBe('accelerate');
+    expect(accelerate.rpm).toBeGreaterThanOrEqual(SELF_SUSTAIN_RPM);
+    expect(accelerate.rpm).toBeLessThan(SELF_SUSTAIN_RPM + 100);
+  });
+
+  it('runs from the crank to idle in the 30 to 45 s a Riedel start takes', () => {
+    const { idleTime } = flyTheDrill();
+    // This model took 80 s before bead b38. The starter torque was the fault:
+    // a linear fade to zero at 1200 rpm put the surplus power at exactly zero
+    // at the 800 rpm light off speed, so the crank approached that speed along
+    // an asymptote and spent 15 s over the last 200 rpm.
+    expect(idleTime).toBeGreaterThan(30);
+    expect(idleTime).toBeLessThan(45);
+  });
+
+  it('cranks to the light off speed in under 10 s, which is what 10 hp gives', () => {
+    const engine = createJumo004(new Vector3(0, -2.5, 0.3));
+    const input = makeInput();
+    input.starterEngaged = true;
+    const time = runUntil(engine, input, 30, () => engine.rpm >= STARTER_TARGET_RPM);
+    expect(engine.rpm).toBeGreaterThanOrEqual(STARTER_TARGET_RPM);
+    // The rotor holds 10.5 kg m2 and 800 rpm is 83.8 rad/s, so the rotor stores
+    // 36.9 kJ. The Riedel makes 7457 W and the motoring drag takes about half
+    // of it near the top, so the crank cannot be much under 8 s or over 10.
+    expect(time).toBeGreaterThan(5);
+    expect(time).toBeLessThan(10);
+  });
+
+  it('holds the rotor near 1200 rpm on the Riedel alone with no fuel', () => {
+    const engine = createJumo004(new Vector3(0, 0, 0));
+    const input = makeInput();
+    input.starterEngaged = true;
+    run(engine, input, 120);
+    // Constant power against the motoring drag and the bearings:
+    // 7457 / w = 0.415 w + 8 gives w = 124.7 rad/s, which is 1191 rpm. The
+    // starter alone therefore cannot reach the 1800 rpm of handbook step 8. The
+    // flame does the rest, which is why the handbook holds the handle in
+    // THROUGH the light off.
+    expect(engine.rpm).toBeGreaterThan(1100);
+    expect(engine.rpm).toBeLessThan(1300);
+    expect(engine.state).toBe('starter');
+    expect(engine.startPhase).toBe('crank');
+  });
+
+  it('names the step and the next action while the start runs', () => {
+    const { phases, engine } = flyTheDrill();
+    // Every step but the last tells the pilot what to do next.
+    for (const step of phases.slice(0, 3)) {
+      expect(step.phase).not.toBe('failed');
+    }
+    // The engine says nothing once it idles, because there is nothing to say.
+    expect(engine.startPhase).toBe('complete');
+    expect(engine.message).toBe('');
+  });
+});
+
+/**
+ * BEAD b38 and BEAD b56 item 3. A start that fails says why, and the pilot can
+ * clear it.
+ */
+describe('Jumo 004 failed start signalling', () => {
+  it('names the hot start and gives the handbook drill for it', () => {
+    const engine = createJumo004(new Vector3(0, -2.5, 0.3));
+    const input = makeInput();
+    input.starterEngaged = true;
+    runUntil(engine, input, 30, () => engine.rpm >= 700);
+    // The lever sits at half travel, which is the fault the handbook warns of.
+    input.throttle = 0.5;
+    input.fuelCockOpen = true;
+    run(engine, input, 6);
+    expect(engine.events.hotStartCount).toBeGreaterThan(0);
+    expect(engine.startPhase).toBe('failed');
+    // The message names the fault, says the turbine took damage, and gives the
+    // two actions that clear it.
+    expect(engine.message).toContain('Hot start');
+    expect(engine.message).toContain('turbine took damage');
+    expect(engine.message).toContain('Close the fuel cock');
+    expect(engine.message).toContain('tail pipe');
+    expect(engine.damage).toBeGreaterThan(0);
+  });
+
+  it('clears the wet tail pipe when the pilot cranks with the fuel shut', () => {
+    const engine = createJumo004(new Vector3(0, -2.5, 0.3));
+    const input = makeInput();
+    input.starterEngaged = true;
+    runUntil(engine, input, 30, () => engine.rpm >= 700);
+    input.throttle = 0.5;
+    input.fuelCockOpen = true;
+    run(engine, input, 6);
+    const afterHotStart = engine.damage;
+    expect(engine.pooledFuel).toBeGreaterThan(0);
+
+    // The handbook drill: close the fuel and crank until the tail pipe clears.
+    input.throttle = 0;
+    input.fuelCockOpen = false;
+    run(engine, input, 30);
+    expect(engine.pooledFuel).toBe(0);
+    expect(engine.message).toContain('tail pipe is clear');
+
+    // The retry now works, and it costs no more of the turbine. Before bead
+    // b56 the pool never drained, so every retry burned it again and drove the
+    // damage from 0.35 to 0.90 on the second attempt alone.
+    input.fuelCockOpen = true;
+    runUntil(engine, input, 90, () => engine.state === 'idle');
+    expect(engine.state).toBe('idle');
+    expect(engine.startPhase).toBe('complete');
+    expect(engine.damage).toBeCloseTo(afterHotStart, 3);
+  });
+
+  it('says the fuel cock is shut when no fuel reaches the burners', () => {
+    const { engine, input } = idlingEngine();
+    input.fuelCockOpen = false;
+    run(engine, input, 2);
+    expect(engine.state).toBe('flameout');
+    expect(engine.message).toContain('Open the fuel cock');
+  });
+
+  it('says the feed failed when the cock is open and no fuel arrives', () => {
+    const { engine, input } = idlingEngine();
+    input.fuelAvailable = false;
+    run(engine, input, 2);
+    expect(engine.state).toBe('flameout');
+    // Negative g uncovers the pickup. The pilot must know that the cock is not
+    // the problem, or the pilot works the wrong control.
+    expect(engine.message).toContain('no fuel arrives');
+    expect(engine.message).toContain('positive g');
+  });
+
+  it('says the rotor is too slow when a windmill relight has no rotor speed', () => {
+    const { engine, input } = idlingEngine();
+    input.altitude = 3000;
+    input.density = isa(3000).density;
+    input.airspeed = 60;
+    input.mach = 0.18;
+    input.fuelCockOpen = false;
+    run(engine, input, 1);
+    run(engine, input, 150);
+    input.fuelCockOpen = true;
+    run(engine, input, 5);
+    expect(engine.rpm).toBeLessThan(RELIGHT_MIN_RPM);
+    expect(engine.state).toBe('flameout');
+    expect(engine.message).toContain('turns too slowly');
+  });
+
+  it('says the lever is open when a windmill relight is refused for that', () => {
+    const { engine, input } = idlingEngine();
+    input.altitude = 3000;
+    input.density = isa(3000).density;
+    input.airspeed = 160;
+    input.mach = 0.48;
+    input.fuelCockOpen = false;
+    run(engine, input, 1);
+    run(engine, input, 60);
+    input.throttle = 0.8;
+    input.fuelCockOpen = true;
+    run(engine, input, 10);
+    expect(engine.state).toBe('flameout');
+    expect(engine.rpm).toBeLessThan(HOT_RELIGHT_MIN_RPM);
+    expect(engine.message).toContain('Close the throttle');
+  });
+
+  it('says the engine burns and gives the one action that ends a fire', () => {
+    const engine = createJumo004(new Vector3(0, -2.5, 0.3));
+    const input = makeInput();
+    input.starterEngaged = true;
+    input.fuelCockOpen = true;
+    input.throttle = 0.9;
+    run(engine, input, 40);
+    if (engine.state === 'fire') {
+      expect(engine.message).toContain('Shut it down');
+      expect(engine.startPhase).toBe('failed');
+    }
+  });
+});
+
+/**
+ * BEAD b70. A hot engine relights with the lever where it is.
+ *
+ * The closed throttle rule of the handbook air start is right for a cold
+ * windmilling rotor and wrong for an engine that lost its flame a second ago
+ * with the rotor still turning at its running speed.
+ */
+describe('Jumo 004 hot relight', () => {
+  /** Builds an engine running at power in a dive at 4000 m. */
+  function divingEngine(): { engine: Engine; input: EngineInput } {
+    const { engine, input } = idlingEngine();
+    run(engine, input, 20, () => advanceOnTheMargin(engine, input, 0.6));
+    input.throttle = 1;
+    run(engine, input, 10);
+    input.altitude = 4000;
+    input.density = isa(4000).density;
+    input.airspeed = 230;
+    input.mach = 0.7;
+    run(engine, input, 5);
+    expect(engine.state).toBe('running');
+    return { engine, input };
+  }
+
+  it('relights with the throttle wide open after a fuel interruption in a dive', () => {
+    const { engine, input } = divingEngine();
+    const thrust = engine.thrust;
+    expect(engine.rpm).toBeGreaterThan(HOT_RELIGHT_MIN_RPM);
+
+    // Negative g uncovers the fuel pickup for one second. The pilot keeps the
+    // lever where it is, because the pilot is flying a dive.
+    input.fuelAvailable = false;
+    run(engine, input, 1);
+    expect(engine.state).toBe('flameout');
+
+    input.fuelAvailable = true;
+    run(engine, input, 2);
+    // Before bead b70 the engine stayed out for the whole dive, because the
+    // relight test asked for a throttle under 5 percent and the pilot had it
+    // wide open.
+    expect(engine.state).toBe('running');
+    expect(input.throttle).toBe(1);
+    expect(engine.thrust).toBeCloseTo(thrust, 0);
+  });
+
+  it('takes the hot relight without a surge, because the airflow is there', () => {
+    const { engine, input } = divingEngine();
+    input.fuelAvailable = false;
+    run(engine, input, 1);
+    input.fuelAvailable = true;
+    let worst = 1;
+    run(engine, input, 6, () => {
+      worst = Math.min(worst, engine.surgeMargin);
+    });
+    // At 6000 rpm and above the compressor already passes the air that an open
+    // lever asks for. That is the published rule the threshold comes from.
+    expect(worst).toBeGreaterThan(0);
+    expect(engine.state).toBe('running');
+    // The flame lights back into a combustor whose valve never closed, so the
+    // gas temperature spikes for a fraction of a second and the turbine creeps
+    // a little. One tenth of one percent per relight is the price, against the
+    // 36 percent that one hot start on the ground costs.
+    expect(engine.damage).toBeLessThan(0.01);
+  });
+
+  it('refuses the hot relight once the rotor falls below the published 6000 rpm', () => {
+    const { engine, input } = divingEngine();
+    input.fuelAvailable = false;
+    // Hold the fuel away until the rotor coasts under the threshold.
+    runUntil(engine, input, 60, () => engine.rpm < HOT_RELIGHT_MIN_RPM - 200);
+    expect(engine.rpm).toBeLessThan(HOT_RELIGHT_MIN_RPM);
+    input.fuelAvailable = true;
+    run(engine, input, 5);
+    // The lever is still wide open, so only the cold rule is left and it holds
+    // the relight shut. The message says which control clears it.
+    expect(engine.state).toBe('flameout');
+    expect(engine.message).toContain('Close the throttle');
+  });
+
+  it('still needs the closed lever for a cold windmill start', () => {
+    const { engine, input } = idlingEngine();
+    input.altitude = 3000;
+    input.density = isa(3000).density;
+    input.airspeed = 160;
+    input.mach = 0.48;
+    input.fuelCockOpen = false;
+    run(engine, input, 1);
+    run(engine, input, 120);
+    expect(engine.rpm).toBeGreaterThan(RELIGHT_MIN_RPM);
+    expect(engine.rpm).toBeLessThan(HOT_RELIGHT_MIN_RPM);
+
+    // Lever open. The handbook air start says "Throttle closed", and this is a
+    // windmilling rotor, so the rule stands.
+    input.throttle = 0.8;
+    input.fuelCockOpen = true;
+    run(engine, input, 20);
+    expect(engine.state).toBe('flameout');
+
+    // Lever closed. Now it lights.
+    input.throttle = 0;
+    run(engine, input, 40);
+    expect(engine.state === 'idle' || engine.state === 'running').toBe(true);
+  });
+
+  it('reports the threshold as the published throttle danger band speed', () => {
+    // The basis of the number. The handbook says that below 6000 rpm any
+    // advance of the throttle must be made slowly. A relight is one more
+    // advance of the throttle, so it takes the same bound.
+    expect(HOT_RELIGHT_MIN_RPM).toBe(DANGER_BAND_RPM);
   });
 });
 

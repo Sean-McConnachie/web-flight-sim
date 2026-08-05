@@ -40,6 +40,21 @@
  * - `kind` says how to read the source. It does not say whether the action is
  *   an edge or a hold. That is a property of the action, not of the key, so
  *   EDGE_ACTIONS holds it.
+ *
+ *
+ * CONTROL AUTHORITY
+ *
+ * The Me 262 has no power controls. The stick force of a surface follows the
+ * hinge moment, which follows the dynamic pressure, so the deflection a pilot
+ * can hold falls as the aircraft goes faster. A stick and a key both report a
+ * full command whatever the speed, so without a scaling a keyboard pilot puts
+ * FULL surface deflection on at 900 km/h and breaks the wing. `controlAuthority`
+ * holds the law and the poll applies it to the three flight axes.
+ *
+ * This is an INPUT limit and not a flight model limit. It says how far the pilot
+ * can move the stick, not what the surface does when it gets there. The flight
+ * model, the trim solver and the flight tests all command the surface directly
+ * and none of them reads this file, so none of them changes.
  */
 
 import { config } from '@/core/config';
@@ -100,6 +115,12 @@ export interface InputSystemOptions {
    * rudder until the aircraft module supplies the real answer.
    */
   groundContact?: () => boolean;
+  /**
+   * Reports the dynamic pressure of the free stream, Pa. `controlAuthority`
+   * reads it. The default reports zero, which is full authority, so a test that
+   * checks a binding needs no aircraft.
+   */
+  dynamicPressure?: () => number;
 }
 
 /** Action names that hold a number. */
@@ -186,6 +207,61 @@ const AXIS_AS_BUTTON_THRESHOLD = 0.5;
 const SHIFT_PREFIX = 'Shift+';
 
 /**
+ * Dynamic pressure up to which the pilot reaches the full travel of a control,
+ * Pa.
+ *
+ * 10 kPa is 456 km/h of equivalent airspeed. Below it the pilot has every
+ * degree of every surface, so the takeoff, the approach, the stall and the
+ * recovery from a stall all keep the control they had. The flight test harness
+ * schedules its own pitch gains on the same 10 kPa, for the same reason: an
+ * elevator moment follows the dynamic pressure.
+ * Confidence: estimate. It is the stick force a pilot can hold, in the units
+ * this file can measure it in.
+ */
+export const FULL_AUTHORITY_PRESSURE = 10000; // Pa
+
+/**
+ * Smallest part of the travel the pilot keeps, whatever the speed.
+ *
+ * The law below would run to zero in a dive and leave the pilot with no way to
+ * recover. The floor is reached at 67 kPa, which is 1180 km/h of equivalent
+ * airspeed, so no state the aircraft can reach meets it. It exists so that a
+ * fault in the caller can never take the controls away.
+ */
+export const MIN_CONTROL_AUTHORITY = 0.15;
+
+/**
+ * Part of the full surface travel a full stick reaches, at one dynamic
+ * pressure.
+ *
+ * BEAD b56, item 4. The hinge moment of a surface is the dynamic pressure times
+ * the area times the chord times a coefficient that follows the deflection, and
+ * the stick force is that moment through a fixed gearing. A pilot has a fixed
+ * maximum pull, so the deflection the pilot can hold falls as ONE OVER the
+ * dynamic pressure. That is the law below.
+ *
+ * WHAT IT DOES AND WHAT IT DOES NOT DO. A snatch to full stick at 3000 m and
+ * Mach 0.75, held for three seconds, was measured against the flight model:
+ *
+ *   after 0.25 s   12.33 g before the scaling, 8.87 g with it
+ *   peak           13.74 g before the scaling, 13.02 g with it
+ *
+ * The scaling therefore removes the STEP that a key press used to make, which
+ * is what bead b56 reports. It does not cap the load factor of a pilot who
+ * HOLDS the stick back. It cannot: above about 600 km/h the elevator of this
+ * airframe drives the wing to its stall angle at a few degrees of deflection,
+ * so no bound on the deflection alone keeps the aircraft inside the envelope.
+ * The aircraft of 1944 behaved the same way, which is why its handbook
+ * placards the pilot away from high speed dives and away from acrobatics
+ * instead of giving a limit to fly to. The pilot now reads the warning that
+ * src/ui/hud.ts prints and the failure that src/main.ts shows.
+ */
+export function controlAuthority(dynamicPressure: number): number {
+  if (!(dynamicPressure > FULL_AUTHORITY_PRESSURE)) return 1;
+  return clamp(FULL_AUTHORITY_PRESSURE / dynamicPressure, MIN_CONTROL_AUTHORITY, 1);
+}
+
+/**
  * The default map.
  *
  * Gamepad, standard mapping:
@@ -207,6 +283,20 @@ const SHIFT_PREFIX = 'Shift+';
  * The flaps sit on the D-pad and not on X. A flap lever moves two ways. A pair
  * of D-pad keys shows that shape, and a single button with a modifier does not.
  * X stays free for a later action.
+ *
+ * Keyboard, the part that is not obvious:
+ *
+ *   Q, E              rudder, left and right
+ *   Z, C              LEFT wheel brake and RIGHT wheel brake, one at a time
+ *   B                 both wheel brakes
+ *
+ * BEAD b56. Z and C sit under Q and E, one key column each, so the brake of a
+ * side is under the same finger as the rudder of that side. This aircraft turns
+ * on the ground with the nose wheel AND with the differential brake, and B
+ * drives both wheels together, so a keyboard pilot had no way to brake one side
+ * before these two keys. The keys carry no taxi gate, unlike the gamepad
+ * triggers below, because a key that does nothing else cannot fight the rudder.
+ * A pilot can therefore hold the aircraft straight with them after touchdown.
  */
 export const DEFAULT_BINDINGS: readonly Binding[] = [
   // Stick axes.
@@ -241,6 +331,9 @@ export const DEFAULT_BINDINGS: readonly Binding[] = [
   { action: 'brakeRight', kind: 'axis', gamepad: 'rightTrigger', scale: 1 },
   { action: 'brakeLeft', kind: 'button', gamepad: 'b', keys: ['KeyB'], scale: 1 },
   { action: 'brakeRight', kind: 'button', gamepad: 'b', keys: ['KeyB'], scale: 1 },
+  // One key per side. See the keyboard part of the comment above the table.
+  { action: 'brakeLeft', kind: 'button', keys: ['KeyZ'], scale: 1 },
+  { action: 'brakeRight', kind: 'button', keys: ['KeyC'], scale: 1 },
 
   // Buttons.
   { action: 'toggleGear', kind: 'button', gamepad: 'a', keys: ['KeyG'] },
@@ -395,6 +488,7 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
   const gamepad: GamepadReader = options?.gamepad ?? createGamepadReader();
   const keyboard: KeyboardReader = options?.keyboard ?? createKeyboardReader();
   const groundContact: () => boolean = options?.groundContact ?? (() => false);
+  const dynamicPressure: () => number = options?.dynamicPressure ?? (() => 0);
   const compiled = compile(options?.bindings ?? DEFAULT_BINDINGS);
 
   const state = createControlInput();
@@ -528,9 +622,13 @@ export function createInputSystem(options?: InputSystemOptions): InputSystem {
         }
       }
 
-      state.roll = clamp(axisSum.roll, -1, 1);
-      state.pitch = clamp(axisSum.pitch, -1, 1);
-      state.yaw = clamp(axisSum.yaw, -1, 1);
+      // The three flight axes carry the control authority of this speed. See
+      // controlAuthority. The look axes move the head and not a surface, so
+      // they keep their full range.
+      const authority = controlAuthority(dynamicPressure());
+      state.roll = clamp(axisSum.roll, -1, 1) * authority;
+      state.pitch = clamp(axisSum.pitch, -1, 1) * authority;
+      state.yaw = clamp(axisSum.yaw, -1, 1) * authority;
       state.lookYaw = clamp(axisSum.lookYaw, -1, 1);
       state.lookPitch = clamp(axisSum.lookPitch, -1, 1);
 

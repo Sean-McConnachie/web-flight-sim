@@ -533,7 +533,18 @@ describe('the Mach limit', () => {
       test.input.throttle = throttle;
       test.input.pitch = entry.elevator + trim;
       let peakLoad = 0;
-      for (let i = 0; i < 15; i++) {
+      // THE WINDOW WAS 15 SECONDS UNTIL BEAD b65. That bead corrected the
+      // reference sweep of compressibility.ts from 18.5 to 15.72 degrees, which
+      // is the quarter chord angle of the published 18.5 degree leading edge.
+      // The tailplane and the fin sweep less than the wing, so both now meet
+      // their shock 1.5 percent later and both pay less wave drag. The aircraft
+      // therefore sheds its Mach number more slowly and the recovery takes two
+      // seconds longer. Measured, second by second: the nose reaches level at
+      // 17 s and passes 9 degrees up at 18 s, against 15 s before the bead. The
+      // window follows the measurement. The throttles alone still leave the
+      // aircraft at Mach 0.85 and 33 degrees nose down at 18 s.
+      const WINDOW = 18; // s
+      for (let i = 0; i < WINDOW; i++) {
         test.flyOpenLoop(1);
         const s = test.sample();
         peakLoad = Math.max(peakLoad, s.loadFactor);
@@ -544,7 +555,7 @@ describe('the Mach limit', () => {
       const out = test.sample();
       note(
         `  from Mach ${atLimit.mach.toFixed(3)} at ${atLimit.altitude.toFixed(0)} m, ` +
-          `throttle ${throttle.toFixed(1)} and trim ${trim.toFixed(2)}: after 15 s Mach ` +
+          `throttle ${throttle.toFixed(1)} and trim ${trim.toFixed(2)}: after ${WINDOW} s Mach ` +
           `${out.mach.toFixed(3)}, pitch ${toDeg(out.pitch).toFixed(1)} deg, ` +
           `${out.altitude.toFixed(0)} m, peak load factor ${peakLoad.toFixed(2)}`,
       );

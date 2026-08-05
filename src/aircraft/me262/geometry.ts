@@ -111,11 +111,7 @@ export const WING_AREA = 21.7; // m2
 /** Aspect ratio, b^2 / S. Source: CONVENTIONS section 8, derived. */
 export const WING_ASPECT_RATIO = 7.21;
 
-/** Sweep of the quarter chord line. Source: CONVENTIONS section 8, firm. */
-export const WING_SWEEP = 18.5 * DEG; // rad
-
 const HALF_SPAN = WING_SPAN / 2;
-const TAN_SWEEP = Math.tan(WING_SWEEP);
 
 /**
  * Root chord and tip chord. A straight taper wing holds S = (b / 2)(cr + ct),
@@ -124,6 +120,38 @@ const TAN_SWEEP = Math.tan(WING_SWEEP);
  */
 const ROOT_CHORD = 2.4; // m
 const TIP_CHORD = 1.07; // m
+
+/**
+ * Sweep of the LEADING EDGE. Source: CONVENTIONS section 8, firm.
+ *
+ * READ THE NOTE ON THE SWEEP IN CONVENTIONS SECTION 8. The 18.5 degrees of this
+ * aircraft is a LEADING EDGE angle, not a quarter chord angle. The table called
+ * it a quarter chord angle until bead b65, and that was the third wrong number
+ * found in that table.
+ */
+export const WING_SWEEP_LEADING_EDGE = 18.5 * DEG; // rad
+
+/**
+ * Sweep of the quarter chord line, DERIVED from the leading edge sweep.
+ *
+ * The quarter chord point of every section sits 0.25 c behind the leading edge,
+ * and the chord falls from 2.40 m to 1.07 m over the 6.255 m semi span, so
+ *
+ *   tan(sweep at c/4) = tan(sweep at the leading edge) - 0.25 (cr - ct) / (b/2)
+ *                     = 0.33460 - 0.05316 = 0.28144
+ *
+ * which is 15.72 degrees. The two angles differ by 2.8 degrees, so the choice is
+ * not a rounding question. Confidence: derived from firm data.
+ *
+ * src/render/models/me262.ts still draws a quarter chord line at 18.5 degrees,
+ * rooted at station 4.85 m. The two files disagree until that one follows. Bead
+ * b65 does not own the render model, so its report names the change.
+ */
+export const WING_SWEEP = Math.atan(
+  Math.tan(WING_SWEEP_LEADING_EDGE) - (0.25 * (ROOT_CHORD - TIP_CHORD)) / HALF_SPAN,
+); // rad, 15.719 deg
+
+const TAN_SWEEP = Math.tan(WING_SWEEP);
 
 /**
  * Mean aerodynamic chord of the straight taper wing.
@@ -139,8 +167,34 @@ export const MAC =
 export const MAC_SPAN_STATION =
   ((WING_SPAN / 6) * (1 + (2 * TIP_CHORD) / ROOT_CHORD)) / (1 + TIP_CHORD / ROOT_CHORD); // 2.728 m
 
-/** Station of the wing root quarter chord, meters aft of the nose tip. */
-const WING_ROOT_QUARTER_STATION = 4.85; // m
+/**
+ * Station of the wing root quarter chord, meters aft of the nose tip.
+ *
+ * DERIVED, so that the quarter chord line passes through 25 percent of the mean
+ * aerodynamic chord AT THE CENTER OF GRAVITY. That relation is the one
+ * src/aircraft/me262/mass.ts and src/render/models/me262.ts both state, and it
+ * is what fixes the static margin of the aircraft. The value comes out at
+ * 4.992 m, so the root leading edge sits 4.392 m aft of the nose tip.
+ *
+ * WHY IT IS DERIVED AND NOT WRITTEN DOWN. The file held 4.850 m before bead b65,
+ * which put the 25 percent point at 5.763 m with the sweep the table then gave.
+ * That is where CG_OFFSET_FROM_NOSE of 5.76 m came from. Correcting the sweep to
+ * the quarter chord value of 15.72 degrees moves the 25 percent point of a wing
+ * rooted at 4.850 m forward to 5.618 m, which is 0.145 m AHEAD of the center of
+ * gravity. Measured, that takes the static margin from +3.4 percent of the mean
+ * chord to -4.2 percent at 6000 m: the aircraft would be statically unstable.
+ *
+ * Two numbers can absorb the 0.145 m and only one of them may move here. The
+ * center of gravity is fixed by mass.ts, by the render model and by a literal in
+ * test/unit/me262-geometry.test.ts. The root station was an estimate read off a
+ * three view, where 0.145 m is 1.4 percent of the length of the aircraft and
+ * inside the reading error. The estimate is therefore the one that moves. The
+ * report of bead b65 names the other choice, which is to hold the wing at
+ * 4.850 m and carry the center of gravity forward to 5.618 m. That needs mass.ts
+ * and the render model to move together, and it lengthens the tail arm by 4
+ * percent.
+ */
+const WING_ROOT_QUARTER_STATION = CG_OFFSET_FROM_NOSE - TAN_SWEEP * MAC_SPAN_STATION; // m, 4.992
 
 /** Dihedral of the outer panel, and the span station where it starts. Estimate. */
 const WING_DIHEDRAL = 3.5 * DEG;
@@ -192,17 +246,37 @@ const AILERON_SPAN: readonly [number, number] = [4.0, 5.98];
  * span.
  *
  * THE REAL AIRCRAFT CARRIED MORE SLAT THAN THIS. The A-1a had three separate
- * slat panels on each wing, and the innermost one sat between the fuselage and
- * the engine nacelle. The leading edge was therefore slatted over nearly its
- * whole span, with a break at the nacelle. Source: Wikipedia, Messerschmitt
- * Me 262, wing description, confidence: medium.
+ * slat panels on each wing, each one hung on two hinges, and the innermost one
+ * sat between the fuselage and the engine nacelle. The leading edge was
+ * therefore slatted over nearly its whole span, with a break at the nacelle.
+ * Source: Stapfer, "Messerschmitt Me 262", pages 31 and 36, as cited by
+ * Wikipedia. Confidence: medium.
  *
- * The model holds the outer panels only. That choice is conservative for the
- * stall: an inboard slat would hold the root attached as well, would raise the
- * peak lift of the whole wing, and would drop the stall speed below the 180 to
- * 202 km/h band of the pilot handbook that bead b33 tuned against. The missing
- * inboard panel therefore belongs to its own bead, together with a new stall
- * speed calibration. See the report of bead b55.
+ * BEAD b57 ADDED THE INBOARD PANEL, MEASURED IT, AND TOOK IT OUT AGAIN. The
+ * model may not carry it. Here is the measurement, at full fuel with the gear
+ * and the flaps down, against the 180 to 202 km/h band of the pilot handbook:
+ *
+ *   outer panels only, as this file stands        182.0 km/h, peak lift 1.80
+ *   outer panels from 2.50 m, at the nacelle      173.1 km/h, peak lift 1.99
+ *   that panel and the inboard panel as well      160.4 km/h, peak lift 2.25
+ *
+ * The clean peak lift of the whole aircraft runs from 1.58 to 1.96 when both
+ * panels go on, which is 24 percent. The root strip alone carries a quarter of
+ * the area of the semi span, and the slat holds it attached for six more
+ * degrees. The stall then lands 20 km/h BELOW the floor of the handbook band.
+ * No calibration inside this file recovers that without pushing some other
+ * measured number out of its own band, so the bead reports the gap instead of
+ * closing it.
+ *
+ * The gap is real and it is not only a slat gap. Two other things point the same
+ * way. Stapfer gives the stall speed of the slatted aircraft as 160 to 170 km/h,
+ * which is exactly where the model lands with both panels fitted. That source
+ * and the pilot handbook therefore do not agree with each other. And the strip
+ * grid cannot hold the panel honestly: the inboard slat runs about 0.55 m to
+ * 1.60 m, the first cosine strip runs 0.00 m to 1.22 m, and SurfaceDef carries
+ * no slat coverage fraction, so the strip takes the whole effect or none of it. A model that resolves this panel
+ * needs a slat coverage field in src/physics/aero/surface.ts and a finer inboard
+ * grid, and then a fresh stall calibration against the handbook band.
  */
 const SLAT_SPAN: readonly [number, number] = [3.0, 6.02];
 
@@ -241,18 +315,36 @@ const FLAP_TAU = 0.26;
  * Raymer gives 1.3 for the section peak increment of a slotted flap. Hoerner
  * gives 1.0 to 1.3 for the same device. The Me 262 flap is a plain slot with no
  * Fowler travel and a flap chord near 26 percent, which sits at the low end of
- * that band, so the model takes 1.2 at the 50 degree landing setting.
+ * that band, so the model takes 1.1 at the 50 degree landing setting.
  *
  * Read the pair with FLAP_TAU. The zero lift shift gives 1.55 of extra lift in
- * the straight part of the curve and the peak rises by 1.2, so the section
- * stalls (1.55 - 1.20) / 6.8 = 2.9 degrees earlier. That is the mechanism the
+ * the straight part of the curve and the peak rises by 1.1, so the section
+ * stalls (1.55 - 1.10) / 6.8 = 3.8 degrees earlier. That is the mechanism the
  * measured sections show.
+ *
+ * BEAD b65 MOVED THIS VALUE FROM 1.2 TO 1.1, AND THE REASON IS THE SWEEP.
+ * Correcting the quarter chord sweep from 18.5 to 15.72 degrees leaves the
+ * normal dynamic pressure of every strip higher, so the whole wing carries 2.8
+ * percent more peak lift. The landing stall speed fell from 181.8 km/h to
+ * 179.2 km/h, which is BELOW the 180 km/h floor of the pilot handbook, and the
+ * model may not stand there. Hoerner opens his band at 1.0 and this flap has no
+ * Fowler travel, so the low end is where a plain slot belongs. The handbook also
+ * gives 202 km/h for the very configuration the flight test flies, which is the
+ * TOP of its 180 to 202 band, so a model at the bottom of that band was already
+ * generous to this flap.
+ *
+ * Measured, gear and flaps down at full fuel: 179.2 km/h at 1.2, 182.0 km/h at
+ * 1.1, 183.5 km/h at 1.05, 184.9 km/h at 1.0. The peak lift with the landing
+ * flap reads 1.85, 1.797, 1.77 and 1.74 against the 1.80 that the table of
+ * CONVENTIONS section 8 records. The value of 1.1 puts the stall speed back
+ * where it stood before the sweep correction and holds the peak lift on the
+ * recorded number, so it is the value that changes the least.
  *
  * Source: Raymer, "Aircraft Design: A Conceptual Approach", table of flap
  * increments, and Hoerner, "Fluid Dynamic Lift", chapter 5. Confidence:
  * estimate.
  */
-const FLAP_CLMAX_DELTA = 1.2 / FLAP_LANDING_ANGLE; // per rad of deflection
+const FLAP_CLMAX_DELTA = 1.1 / FLAP_LANDING_ANGLE; // per rad of deflection
 
 /**
  * Extra fall of the stall angle of the flapped section, on top of the 2.9

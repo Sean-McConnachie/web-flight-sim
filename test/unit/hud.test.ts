@@ -4,6 +4,7 @@ import { Quaternion, Vector3 } from 'three';
 import {
   HUD_ALERTS,
   HUD_FIELDS,
+  engineMessageText,
   findHudField,
   fixedText,
   flapSpeedLevel,
@@ -24,6 +25,13 @@ import {
   createCameraRig,
 } from '@/render/cameras';
 import { DANGER_BAND_RPM, TURBINE_INLET_TEMPERATURE_LIMIT } from '@/aircraft/me262/engine';
+import {
+  LIMIT_LOAD_NEGATIVE,
+  LIMIT_LOAD_POSITIVE,
+  STRAIN_STRENGTH_LOSS,
+  loadLimits,
+} from '@/aircraft/me262/limits';
+import { MAX_TAKEOFF_MASS } from '@/aircraft/me262/mass';
 import { GEAR_LIMIT_SPEED } from '@/aircraft/me262/systems';
 import { kmhToMs, msToKmh, toDeg } from '@/math/units';
 import { isa } from '@/physics/atmosphere';
@@ -61,25 +69,30 @@ function makeSample(): TelemetrySample {
 
 /** The readout with every field writable, so a test can set one up. */
 interface MutableReadout {
-  engines: Array<{ rpm: number; gasTemperature: number; state: string }>;
+  engines: Array<{ rpm: number; gasTemperature: number; state: string; message: string }>;
   throttle: number;
   fuelMass: number;
   gearPosition: number;
   flapPosition: number;
   rounds: number;
+  loadLimits: { limitPositive: number; limitNegative: number };
 }
 
 function makeReadout(): MutableReadout {
   return {
     engines: [
-      { rpm: 0, gasTemperature: 288.15, state: 'off' },
-      { rpm: 0, gasTemperature: 288.15, state: 'off' },
+      { rpm: 0, gasTemperature: 288.15, state: 'off', message: '' },
+      { rpm: 0, gasTemperature: 288.15, state: 'off', message: '' },
     ],
     throttle: 0,
     fuelMass: 2133,
     gearPosition: 1,
     flapPosition: 0,
     rounds: 360,
+    loadLimits: {
+      limitPositive: LIMIT_LOAD_POSITIVE,
+      limitNegative: LIMIT_LOAD_NEGATIVE,
+    },
   };
 }
 
@@ -225,6 +238,66 @@ describe('the warning thresholds', () => {
     expect(loadFactorLevel(-3.5)).toBe('warning');
     expect(loadFactorLevel(6.5)).toBe('caution');
     expect(loadFactorLevel(1)).toBe('normal');
+  });
+
+  it('warns at 6.28 g at the maximum takeoff mass, where the limit really is', () => {
+    // src/aircraft/me262/limits.ts scales the limit with the mass. At 7130 kg
+    // the positive limit is 6.28 g, so 6.5 g is a WARNING and not a caution.
+    const heavy = loadLimits(MAX_TAKEOFF_MASS, {
+      limitPositive: 0,
+      limitNegative: 0,
+      ultimatePositive: 0,
+      ultimateNegative: 0,
+    });
+    expect(heavy.limitPositive).toBeCloseTo(6.28, 2);
+    expect(loadFactorLevel(6.5, heavy.limitPositive, heavy.limitNegative)).toBe('warning');
+    expect(loadFactorLevel(5.7, heavy.limitPositive, heavy.limitNegative)).toBe('caution');
+    expect(loadFactorLevel(1, heavy.limitPositive, heavy.limitNegative)).toBe('normal');
+  });
+
+  it('warns lower once the wing carries a permanent set', () => {
+    // A full permanent set costs the airframe STRAIN_STRENGTH_LOSS of its
+    // strength, so the limit falls from 7.00 g to 4.90 g.
+    const bent = LIMIT_LOAD_POSITIVE * (1 - STRAIN_STRENGTH_LOSS);
+    expect(bent).toBeCloseTo(4.9, 6);
+    expect(loadFactorLevel(5, bent, LIMIT_LOAD_NEGATIVE * (1 - STRAIN_STRENGTH_LOSS))).toBe(
+      'warning',
+    );
+    // The same 5 g raises nothing at all on a sound airframe.
+    expect(loadFactorLevel(5)).toBe('normal');
+  });
+
+  it('prints one engine message even when both engines raise it', () => {
+    const readout = makeReadout();
+    expect(engineMessageText(readout.engines)).toBe('');
+    readout.engines[0].message = 'OPEN THE FUEL COCK.';
+    readout.engines[1].message = 'OPEN THE FUEL COCK.';
+    expect(engineMessageText(readout.engines)).toBe('ENG 1 2  OPEN THE FUEL COCK.');
+  });
+
+  it('prints one line per engine when the two engines say different things', () => {
+    const readout = makeReadout();
+    readout.engines[0].message = 'THE TAIL PIPE IS WET.';
+    readout.engines[1].message = 'CLOSE THE LEVER.';
+    expect(engineMessageText(readout.engines)).toBe(
+      'ENG 1  THE TAIL PIPE IS WET.\nENG 2  CLOSE THE LEVER.',
+    );
+  });
+
+  it('an engine with nothing to say adds no line', () => {
+    const readout = makeReadout();
+    readout.engines[1].message = 'CLOSE THE LEVER.';
+    expect(engineMessageText(readout.engines)).toBe('ENG 2  CLOSE THE LEVER.');
+  });
+
+  it('the G LIMIT alert follows the limits the readout carries', () => {
+    const sample = makeSample();
+    const readout = makeReadout();
+    const alert = HUD_ALERTS.find((a) => a.key === 'load');
+    sample.loadFactor = 5;
+    expect(alert?.level(sample, readout, STILL)).toBe('normal');
+    readout.loadLimits.limitPositive = 4.9;
+    expect(alert?.level(sample, readout, STILL)).toBe('warning');
   });
 
   it('warns on low fuel', () => {

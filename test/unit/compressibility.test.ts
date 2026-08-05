@@ -8,7 +8,7 @@ import {
   machCorrection,
 } from '@/physics/aero/compressibility';
 import type { MachCorrection } from '@/physics/aero/compressibility';
-import { toDeg } from '@/math/units';
+import { DEG, toDeg } from '@/math/units';
 
 const out: MachCorrection = createMachCorrection();
 const other: MachCorrection = createMachCorrection();
@@ -30,7 +30,10 @@ describe('the reference constants', () => {
     expect(TUCK_ONSET_MACH).toBe(0.83);
     expect(MACH_LIMIT).toBe(0.86);
     expect(CRITICAL_MACH).toBeLessThan(TUCK_ONSET_MACH);
-    expect(toDeg(REFERENCE_SWEEP)).toBeCloseTo(18.5, 9);
+    // The QUARTER CHORD sweep. The published 18.5 degrees is the LEADING EDGE
+    // angle, and this wing tapers 2.40 m to 1.07 m over a 6.255 m semi span, so
+    // the quarter chord line sweeps 15.72 degrees. Bead b65 corrected it.
+    expect(toDeg(REFERENCE_SWEEP)).toBeCloseTo(15.72, 9);
   });
 
   it('leave the published level speed at 6000 m free of wave drag', () => {
@@ -179,25 +182,45 @@ describe('the aerodynamic center shift', () => {
 });
 
 describe('the loss of control power', () => {
-  it('is one at Mach 0.75 and below', () => {
-    for (let mach = 0; mach <= 0.75; mach += 0.005) {
+  // The tailplane of the Me 262. The CONTROL_MACH anchors belong to the
+  // ELEVATOR, so they are read at the sweep and the thickness of the surface the
+  // elevator sits on, and not at the wing. Bead b65 moved those anchors when it
+  // corrected the reference sweep. See the note above CONTROL_MACH.
+  const TAIL_SWEEP = 12 * DEG;
+  const TAIL_THICKNESS = 0.09;
+
+  it('is one at Mach 0.73 and below', () => {
+    for (let mach = 0; mach <= 0.73; mach += 0.005) {
       machCorrection(mach, REFERENCE_SWEEP, out);
       expect(out.controlScale).toBe(1);
     }
   });
 
-  it('falls monotonically above Mach 0.75', () => {
+  it('falls monotonically from Mach 0.74 to the last anchor', () => {
     let previous = 1;
-    for (let mach = 0.76; mach <= 1.0; mach += 0.001) {
+    for (let mach = 0.74; mach <= 0.985; mach += 0.001) {
       machCorrection(mach, REFERENCE_SWEEP, out);
       expect(out.controlScale).toBeLessThan(previous);
       previous = out.controlScale;
     }
+    // Above the last anchor the table holds its floor.
+    machCorrection(1.2, REFERENCE_SWEEP, out);
+    expect(out.controlScale).toBeCloseTo(0.15, 12);
   });
 
-  it('reaches about 0.35 at the limit Mach number', () => {
-    machCorrection(MACH_LIMIT, REFERENCE_SWEEP, out);
-    expect(out.controlScale).toBeCloseTo(0.35, 6);
+  it('leaves the ELEVATOR about a third of its power at the limit Mach number', () => {
+    machCorrection(MACH_LIMIT, TAIL_SWEEP, out, TAIL_THICKNESS);
+    expect(out.controlScale).toBeGreaterThan(0.3);
+    expect(out.controlScale).toBeLessThan(0.4);
+  });
+
+  it('takes more from a surface at the wing sweep than from the tailplane', () => {
+    // The tailplane sweeps less than the wing but it is thinner, and the
+    // thickness wins. The tail therefore keeps more control power than a
+    // surface that carries the wing sweep and the wing section.
+    machCorrection(MACH_LIMIT, TAIL_SWEEP, out, TAIL_THICKNESS);
+    machCorrection(MACH_LIMIT, REFERENCE_SWEEP, other);
+    expect(other.controlScale).toBeLessThan(out.controlScale);
   });
 
   it('leaves the elevator weak where the tuck is strong', () => {
@@ -205,6 +228,7 @@ describe('the loss of control power', () => {
     // is near its worst and the elevator has about a third of its authority.
     machCorrection(MACH_LIMIT, REFERENCE_SWEEP, out);
     expect(out.acShift).toBeGreaterThan(0.3);
+    machCorrection(MACH_LIMIT, TAIL_SWEEP, out, TAIL_THICKNESS);
     expect(out.controlScale).toBeLessThan(0.5);
   });
 });

@@ -100,6 +100,8 @@ interface EngineReadoutFields {
   rpm: number;
   gasTemperature: number;
   state: string;
+  /** BEAD b38. The line the engine model writes for the pilot, or empty. */
+  message: string;
 }
 
 /**
@@ -150,18 +152,43 @@ interface Banner {
   hide(): void;
 }
 
+/** Where the divergence banner stands, down the picture. */
+const DIVERGENCE_BANNER_TOP = '38%';
+
 /**
- * Builds the divergence banner.
+ * Where the failure banner stands.
+ *
+ * It sits UNDER the divergence banner. The divergence banner holds until the
+ * pilot respawns, so a failure that arrives in the same second must not cover
+ * it. The value clears the alert strip at the top of the head up display as
+ * well.
+ */
+const FAILURE_BANNER_TOP = '64%';
+
+/**
+ * Time the failure banner holds, s.
+ *
+ * The messages of src/aircraft/me262/limits.ts run to about 35 words and every
+ * one of them ends with an instruction. A pilot who is flying a broken aircraft
+ * reads slowly, so the banner holds long enough to read the message two times.
+ */
+const FAILURE_BANNER_SECONDS = 9;
+
+/**
+ * Builds one banner.
  *
  * The flight model of bead b53 stops the aircraft when a state value stops
  * being a finite number, and it says so on `aircraft.events`. A simulator that
  * freezes without a word looks like a fault of the machine, so the pilot must
  * read what happened and how to carry on.
+ *
+ * `top` places the box down the picture. Two banners can stand at one time, so
+ * they must not sit on each other. See FAILURE_BANNER_TOP.
  */
-function createBanner(parent: HTMLElement): Banner {
+function createBanner(parent: HTMLElement, top: string): Banner {
   const root = document.createElement('div');
   root.style.position = 'absolute';
-  root.style.top = '38%';
+  root.style.top = top;
   root.style.left = '50%';
   root.style.transform = 'translate(-50%, -50%)';
   root.style.maxWidth = '620px';
@@ -352,9 +379,15 @@ async function main(): Promise<void> {
   scene.add(particles.root);
 
   // --- The input ---------------------------------------------------------
-  // The differential brake only works while the wheels touch the ground, so
-  // the input system asks the aircraft.
-  const input = createInputSystem({ groundContact: () => aircraft.state.onGround });
+  // The differential brake on the gamepad triggers only works while the wheels
+  // touch the ground, so the input system asks the aircraft. BEAD b56: the
+  // three flight axes also lose part of their travel as the dynamic pressure
+  // rises, because the stick force of an unboosted control follows it. See
+  // controlAuthority of src/input/bindings.ts.
+  const input = createInputSystem({
+    groundContact: () => aircraft.state.onGround,
+    dynamicPressure: () => aircraft.state.totals.dynamicPressure,
+  });
 
   // --- The cameras -------------------------------------------------------
   // V on the keyboard and Y on the gamepad step through the four flight views.
@@ -410,6 +443,7 @@ async function main(): Promise<void> {
     rpm: 0,
     gasTemperature: 0,
     state: 'off',
+    message: '',
   }));
   // The display reads this record every frame, so it is built one time and
   // written in place. Its shape is the AircraftReadout of src/ui/hud.ts.
@@ -420,6 +454,10 @@ async function main(): Promise<void> {
     gearPosition: 0,
     flapPosition: 0,
     rounds: armament.roundsLeft,
+    // BEAD b69. The LIVE bounds, not a copy. src/aircraft/me262/limits.ts
+    // writes into this object every step, so the G LIMIT warning follows the
+    // mass as the fuel burns and follows the damage the airframe has taken.
+    loadLimits: aircraft.structure.state.limits,
   };
 
   // --- The cockpit dials -------------------------------------------------
@@ -462,16 +500,50 @@ async function main(): Promise<void> {
   // The flight model reports a state that is no longer a finite number. It then
   // holds the aircraft still until a respawn, so the pilot needs to read the
   // reason and the way out.
-  const banner = createBanner(overlay);
+  const banner = createBanner(overlay, DIVERGENCE_BANNER_TOP);
   aircraft.events.on('diverged', (event) => {
     // The model writes the reason and the way out, so this line only adds the
     // time. Two prints of one instruction read as two instructions.
     banner.show(`THE FLIGHT MODEL DIVERGED AT ${event.time.toFixed(1)} s\n\n${event.message}`);
   });
 
+  // --- The failure banner --------------------------------------------------
+  // BEAD b69. src/aircraft/me262/limits.ts raises a message for a bent wing, a
+  // wing that left the aircraft, an overspeed, a jammed aileron, an engine
+  // fire, a lost fuel feed, a burst tire and a faded brake pack. Every message
+  // says what the pilot must do next, and until this bead nothing showed one of
+  // them. A failure the pilot cannot read is the same as no model at all.
+  //
+  // The banner clears itself, unlike the divergence banner. A failure does not
+  // stop the flight, so the message must leave the picture before it hides the
+  // aircraft the pilot is still flying.
+  const failureBanner = createBanner(overlay, FAILURE_BANNER_TOP);
+  /** Handle of the timer that hides the failure banner. Zero means none runs. */
+  let failureTimer = 0;
+
+  function hideFailure(): void {
+    if (failureTimer !== 0) {
+      window.clearTimeout(failureTimer);
+      failureTimer = 0;
+    }
+    failureBanner.hide();
+  }
+
+  aircraft.events.on('failure', (event) => {
+    // A second failure restarts the clock, so the newest message always gets
+    // its full time on screen.
+    if (failureTimer !== 0) window.clearTimeout(failureTimer);
+    failureBanner.show(`FAILURE AT ${event.time.toFixed(1)} s\n\n${event.message}`);
+    failureTimer = window.setTimeout(() => {
+      failureTimer = 0;
+      failureBanner.hide();
+    }, FAILURE_BANNER_SECONDS * 1000);
+  });
+
   /** Puts the aircraft back on the threshold and the camera behind it. */
   function respawn(): void {
     banner.hide();
+    hideFailure();
     aircraft.spawnOnRunway();
     armament.reset();
     previousPosition.copy(aircraft.state.body.position);
@@ -614,6 +686,8 @@ async function main(): Promise<void> {
         readoutEngines[i].rpm = engine.rpm;
         readoutEngines[i].gasTemperature = engine.gasTemperature;
         readoutEngines[i].state = engine.state;
+        // BEAD b38. The next step of the start, or the reason a light failed.
+        readoutEngines[i].message = engine.message;
       }
       readout.throttle = input.state.throttle;
       readout.fuelMass = systems.fuelMass;
