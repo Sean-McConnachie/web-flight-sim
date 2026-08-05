@@ -70,6 +70,20 @@
  * `config.render.shadowMapSize` on a side. At the default 2048 that is about
  * 32 MB for each cascade, so three cascades need about 96 MB. Set
  * `shadowsEnabled` to false, or lower `shadowMapSize` to 1024, to cut that.
+ *
+ *
+ * THE COST ON THE PROCESSOR
+ *
+ * Bead b44 measured the shadow rig with the timestamp queries and with a timer
+ * around the draw. Parked on the runway, at a 1280 by 720 drawing buffer, the
+ * three cascade passes together cost 0.14 ms on the card and 1.7 ms on the
+ * PROCESSOR. The card is not the limit here. The processor cost is the object
+ * count: every object that casts a shadow is submitted one time for each
+ * cascade, and the scene holds about 200 of them.
+ *
+ * So the way to make shadows cheaper on this project is to submit fewer
+ * objects, not to make the map smaller. src/render/instanced.ts takes the empty
+ * levels of detail out of the scene for exactly that reason.
  */
 
 import { CSMShadowNode } from 'three/addons/csm/CSMShadowNode.js';
@@ -81,9 +95,10 @@ import { config } from '@/core/config';
 /**
  * Number of cascades. Three slices keep the shadow under the aircraft sharp
  * and still reach `config.render.shadowDistance`. A fourth slice would add
- * another full shadow map for a small gain, so this module stops at three.
+ * another full shadow map for a small gain, so the configuration stops at
+ * three. `config.render.shadowCascades` carries the value and the cost.
  */
-const CASCADE_COUNT = 3;
+const CASCADE_COUNT = config.render.shadowCascades;
 
 /**
  * Distance the cascade light moves back from its slice, in meters. It must

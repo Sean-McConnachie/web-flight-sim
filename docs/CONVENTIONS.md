@@ -340,6 +340,44 @@ Add `--disable-accelerated-2d-canvas`.
 saying so. Use headed Chrome for the WebGPU path. Always check `backend` on the
 `RendererBundle` before you trust a screenshot.
 
+**Freeing a render target in flight kills the device.** A call to
+`postfx.setQuality('off')` used to kill the renderer every time, and a switch
+between `low` and `high` killed it now and then. Setting `shadows.enabled` to
+false does the same. Hold a retired chain for a few frames before you free it.
+
+---
+
+## 6b. How to measure on this machine
+
+Three agents wasted time on bad measurements. Read this before you profile.
+
+**The frame rate is meaningless here.** The desktop session gives the browser
+window no frame callbacks, so Chrome holds `requestAnimationFrame` at 1 Hz.
+Pump the loop with a TIMER, not a `MessageChannel`. A message channel overruns
+the timestamp query pool and drops whole passes.
+
+**Use GPU timestamp queries.** `trackTimestamp` can be turned on after `init`.
+Three.js asks the adapter for every feature, so the device already holds
+`timestamp-query`. The pool builds when it is first needed.
+
+**Never compare two runs minutes apart.** The clock of this card follows the
+load. The same frame reads 1.9 ms at 190 frames per second and 6.6 ms at 40.
+Compare the share of each pass INSIDE one frame.
+
+**`renderer.info.render` goes stale on this backend.** Do not use a draw call
+count as evidence without a second source.
+
+**Measure the processor as well as the card.** On this project the card was
+never the limit. A timer around `post.render()` found 5.0 ms of processor time
+against 1.9 ms of card time, and 107 draws of nothing per frame.
+
+**One claim that turned out to be FALSE, recorded so nobody repeats it.** An
+early report said Three.js re-uploads every instance matrix each frame, at
+287 kB per frame. It does not, at least at version 0.185.1. `Attributes.update`
+gates on the attribute version, and `InstancedMesh` does not set
+`DynamicDrawUsage`. A still frame sends 2 uploads and 2.1 kB, and none of it is
+instance matrices. Measured by wrapping `backend.updateAttribute`.
+
 ---
 
 ## 7. Tests

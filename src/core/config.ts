@@ -61,6 +61,22 @@ export const config = {
     /** Side of the shadow map, in texels. */
     shadowMapSize: 2048,
 
+    /**
+     * Number of shadow cascades.
+     *
+     * Each cascade holds its own shadow map, so the memory and the draw work
+     * both follow this number. At the 2048 texel map above, one cascade needs
+     * about 32 MB and one cascade costs about 0.6 ms of processor time on every
+     * frame, because every object that casts a shadow is drawn one time for
+     * each cascade. Measured for bead b44, parked on the runway.
+     *
+     * Three slices keep the shadow under the aircraft sharp and still reach
+     * `shadowDistance`. Two slices save a third of that cost and blur the
+     * middle distance. Lower this value first on a machine that cannot hold the
+     * frame rate.
+     */
+    shadowCascades: 3,
+
     /** Distance from the camera that still receives a shadow, in meters. */
     shadowDistance: 600,
 

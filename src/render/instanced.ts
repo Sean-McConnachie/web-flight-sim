@@ -52,6 +52,28 @@
  * bounding sphere always contains the camera and always meets the frustum. The
  * test would cost time and would reject nothing. The distance test above
  * already removes every instance that is too far to see.
+ *
+ * This still holds after the measurement of bead b44. The answer is not to turn
+ * the test back on. It is to take the EMPTY levels out of the picture, which
+ * the next note describes.
+ *
+ *
+ * WHY AN EMPTY LEVEL LEAVES THE SCENE
+ *
+ * A level with no instance in it still costs a full draw. The renderer binds
+ * the pipeline, binds the group, binds the vertex buffers, and asks for zero
+ * instances. Nothing appears, and the work is real.
+ *
+ * The world holds 54 level meshes over 16 types. Parked on the runway, 35 of
+ * them are empty, because no tree grows inside 250 m of the pavement and no
+ * building stands inside 400 m of it. Every one of those 35 was drawn one time
+ * for the picture, and 24 of them were drawn again in EACH of the three shadow
+ * cascades, because a level that starts inside the shadow distance casts a
+ * shadow. That is 35 + 72 draws of nothing on every frame.
+ *
+ * `update` therefore takes an empty level out of the scene graph with
+ * `visible`. The renderer then skips it in the color pass and in every shadow
+ * pass. The level comes back on the frame that gives it its first instance.
  */
 
 import type { BufferGeometry, Material, Object3D } from 'three/webgpu';
@@ -206,6 +228,9 @@ export function createInstancedGroup(
     const mesh = new InstancedMesh(level.geometry, material, Math.max(instanceCount, 1));
     mesh.name = `lod-${k}`;
     mesh.count = 0;
+    // An empty level draws nothing, so it stays out of the scene until the
+    // first update gives it an instance. Read the note above.
+    mesh.visible = false;
     mesh.frustumCulled = false;
 
     // A level casts a shadow only when its near boundary is inside the shadow
@@ -309,6 +334,9 @@ export function createInstancedGroup(
     for (let k = 0; k < levelCount; k += 1) {
       const state = states[k];
       state.mesh.count = state.count;
+      // An empty level leaves the picture and every shadow cascade. Read the
+      // note above.
+      state.mesh.visible = state.count > 0;
       if (state.count > 0) drawCalls += 1;
       if (!state.dirty) continue;
       state.dirty = false;

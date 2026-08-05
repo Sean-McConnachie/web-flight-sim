@@ -268,6 +268,22 @@ const VIGNETTE_STRENGTH = 0.2;
 const DEPTH_EPSILON = 1e-6;
 
 /**
+ * Frames a retired chain stays alive before the module frees it.
+ *
+ * A quality change frees every render target of the old chain. The card is one
+ * or two frames behind the processor, so it may still be reading those targets
+ * at that moment. On this machine that killed the renderer: the page either
+ * reloaded itself about a second later, or the whole tab stopped answering.
+ * Bead b44 measured the fault. A chain that keeps its targets and draws through
+ * `renderer.render` instead does not show it, so the free and not the draw is
+ * the cause.
+ *
+ * The old chain therefore waits in a retired list and the frame loop frees it
+ * later. Four frames is more than the depth of any queue here.
+ */
+const RETIRE_FRAMES = 4;
+
+/**
  * Quality of the chain.
  *
  * - `off` draws with the renderer alone. Nothing is allocated.
@@ -532,14 +548,37 @@ export function createPostChain(
   let width = 0;
   let height = 0;
 
-  function release(): void {
+  /** Chains that wait for the card to finish with them. Read RETIRE_FRAMES. */
+  const retired: { frames: number; disposables: Disposable[] }[] = [];
+
+  /** Put the live chain in the retired list. It is freed a few frames later. */
+  function retire(): void {
     if (chain === null) return;
-    for (const item of chain.disposables) item.dispose();
+    retired.push({ frames: RETIRE_FRAMES, disposables: chain.disposables });
     chain = null;
   }
 
+  /** Free every retired chain that the card has certainly finished with. */
+  function sweepRetired(): void {
+    for (let i = retired.length - 1; i >= 0; i -= 1) {
+      retired[i].frames -= 1;
+      if (retired[i].frames > 0) continue;
+      for (const item of retired[i].disposables) item.dispose();
+      retired.splice(i, 1);
+    }
+  }
+
+  /** Free every retired chain at once. Only the shutdown path may call it. */
+  function releaseAll(): void {
+    retire();
+    for (const item of retired) {
+      for (const one of item.disposables) one.dispose();
+    }
+    retired.length = 0;
+  }
+
   function rebuild(): void {
-    release();
+    retire();
     if (quality === 'off') return;
 
     chain = buildChain(renderer, scene, camera, quality);
@@ -557,10 +596,12 @@ export function createPostChain(
     render(): void {
       if (chain === null) {
         void renderer.render(scene, camera);
+        sweepRetired();
         return;
       }
       for (const update of chain.updates) update();
       pipeline.render();
+      sweepRetired();
     },
 
     get enabled(): boolean {
@@ -588,7 +629,7 @@ export function createPostChain(
     },
 
     dispose(): void {
-      release();
+      releaseAll();
       pipeline.dispose();
     },
   };

@@ -56,10 +56,53 @@
  * the fog mixes into the material output before tone mapping. So a fog color
  * taken from the horizon radiance lands on the same screen color as the sky
  * just above the horizon.
+ *
+ *
+ * WHY THE FOG THINS WITH HEIGHT
+ *
+ * Haze is aerosol, and aerosol sits in the boundary layer. Its density falls
+ * off with height about as fast as `exp(-h / 1200 m)`. The plain `FogExp2` of
+ * three.js holds ONE density for the whole world, so a fit that is right for a
+ * taxi view puts the same thick air at 6300 m. The picture from the cruise then
+ * comes out milk white from edge to edge.
+ *
+ * This module keeps the exponential squared law and gives it a real optical
+ * depth. The fog factor is
+ *
+ *     factor = 1 - exp(-(density * path)^2)
+ *
+ * where `density` is the density of the air AT THE CAMERA and `path` is
+ *
+ *     path = viewDepth * integral of exp(-(h - hCamera) / H) over the ray
+ *          = viewDepth * (1 - exp(-a)) / a,   a = (hFragment - hCamera) / H
+ *
+ * The height of a point on a straight ray is linear in the view depth, so that
+ * integral is exact and it needs no march. The product `density * path` is
+ * therefore the ground density times the true air column along the ray.
+ *
+ * Two results follow.
+ *
+ * First, a view along the ground does not change. The camera and the ground
+ * both sit near h = 0, so `a` is near zero, the integral is 1, and the factor
+ * is the old one to four decimal places. The ground picture came from a grey
+ * card and it stays as it was.
+ *
+ * Second, a view from 6300 m down through the deck now carries the air column
+ * that is really there, which is about a fifth of the column of a level view at
+ * ground level. The far horizon still hazes over, because a ray that runs level
+ * at altitude still crosses many kilometers of air.
+ *
+ * `FogExp2.density` carries the density AT THE CAMERA, and `setViewHeight`
+ * writes it on every frame. The shader reads the same value. Any other module
+ * that reads `scene.fog.density` therefore gets the density of the air the
+ * camera sits in, which is the right first order answer for it as well.
+ * src/render/clouds.ts is such a module: it hazes the deck with
+ * `density * distance`, so the deck now thins out with height in step with the
+ * fog of everything else.
  */
 
 import { SkyMesh } from 'three/addons/objects/SkyMesh.js';
-import type { Object3D, RenderTarget, WebGPURenderer } from 'three/webgpu';
+import type { Node, Object3D, RenderTarget, WebGPURenderer } from 'three/webgpu';
 import {
   Color,
   DirectionalLight,
@@ -69,6 +112,15 @@ import {
   Scene,
   Vector3,
 } from 'three/webgpu';
+import {
+  cameraPosition,
+  exp,
+  float,
+  fog,
+  positionView,
+  positionWorld,
+  uniform,
+} from 'three/tsl';
 
 import { config } from '@/core/config';
 import { nedToThree } from '@/render/frames';
@@ -152,6 +204,32 @@ const FOG_FRACTION_AT_NEAR = 0.03;
 /** Fog thickness the fit asks for at config.render.fogFar. */
 const FOG_FRACTION_AT_FAR = 0.98;
 
+/**
+ * Height where the haze density falls to 1 over e of its ground value, in
+ * meters. Read the note on the height law above.
+ *
+ * A standard aerosol profile puts the scale height of the boundary layer haze
+ * between 1000 m and 1500 m, well under the 8400 m of the Rayleigh air itself.
+ * Source: Elterman, "UV, Visible and IR Attenuation for Altitudes to 50 km",
+ * AFCRL 68-0153, confidence: derived. The value is the middle of that band.
+ */
+const FOG_SCALE_HEIGHT = 1200;
+
+/**
+ * Smallest height ratio the path integral divides by.
+ *
+ * `(1 - exp(-a)) / a` is 1 at a = 0 and the code must not divide by zero. Below
+ * this size the term is held at the value it has here, which differs from 1 by
+ * half of it. At 0.001 that error is 5 parts in 10000 of the optical depth.
+ */
+const FOG_RISE_EPSILON = 0.001;
+
+/**
+ * Largest height ratio the exponential takes. `exp(30)` is 1e13, and the fog is
+ * already solid long before that, so the clamp only stops an overflow.
+ */
+const FOG_RISE_LIMIT = 30;
+
 const DEG_TO_RAD = Math.PI / 180;
 
 export interface SkyBundle {
@@ -175,6 +253,13 @@ export interface SkyBundle {
    * clockwise from north, so 90 is east and 180 is south. */
   setSunAngles(elevationDeg: number, azimuthDeg: number): void;
 
+  /**
+   * Give the fog the height of the camera above the ground, in meters, in the
+   * render frame. Call it once on every frame, BEFORE any module reads
+   * `scene.fog`. Read the note on the height law at the top of this file.
+   */
+  setViewHeight(height: number): void;
+
   /** Rebuild the environment map when the sun moved. Cheap on every other frame. */
   update(renderer: WebGPURenderer, scene: Scene): void;
 
@@ -196,6 +281,41 @@ const FOG_DENSITY = Math.sqrt(
   (Math.sqrt(-Math.log(1 - FOG_FRACTION_AT_NEAR)) / config.render.fogNear) *
     (Math.sqrt(-Math.log(1 - FOG_FRACTION_AT_FAR)) / config.render.fogFar),
 );
+
+/**
+ * Fog thickness of one fragment, from 0 to 1, with the height law.
+ *
+ * `density` is the density of the air at the camera. The result is the part of
+ * the fog color that the fragment takes. Read the note on the height law at the
+ * top of this file for the equation and for the reason.
+ *
+ * Every value the function reads is a scalar or a built-in vector accessor. It
+ * builds no `mat4` uniform of its own, which the WebGL 2 backend of this
+ * version of three.js cannot carry. Read docs/CONVENTIONS.md section 6a.
+ */
+function heightFogFactor(density: Node<'float'>): Node<'float'> {
+  // Depth along the view axis, in meters. `FogExp2` of three.js uses the same
+  // measure, so a level view at ground level keeps the value it had.
+  const viewDepth = positionView.z.negate();
+
+  // Nothing sits below the ground, and a height below zero would only make the
+  // exponential grow.
+  const cameraHeight = cameraPosition.y.max(0);
+  const fragmentHeight = positionWorld.y.max(0);
+
+  const rise = fragmentHeight
+    .sub(cameraHeight)
+    .div(FOG_SCALE_HEIGHT)
+    .clamp(-FOG_RISE_LIMIT, FOG_RISE_LIMIT);
+
+  // The mean of the density profile over the ray, relative to the density at
+  // the camera. It is `(1 - exp(-a)) / a`, which is 1 for a level view.
+  const safeRise = rise.abs().lessThan(float(FOG_RISE_EPSILON)).select(float(FOG_RISE_EPSILON), rise);
+  const profile = float(1).sub(exp(safeRise.negate())).div(safeRise);
+
+  const optical = density.mul(viewDepth).mul(profile);
+  return optical.mul(optical).negate().exp().oneMinus().clamp(0, 1);
+}
 
 /**
  * Horizon color of the sky, in linear sRGB. src/render/ground.ts reads it, so
@@ -417,8 +537,19 @@ export function createSky(renderer: WebGPURenderer, scene: Scene): SkyBundle {
   // adds `sun.target` to the same parent as the light.
   sun.target.position.set(0, 0, 0);
 
-  const fog = new FogExp2(0xffffff, FOG_DENSITY);
-  scene.fog = fog;
+  // `FogExp2.density` carries the density at the camera. `setViewHeight`
+  // writes it on every frame and the shader below reads the same value.
+  const haze = new FogExp2(0xffffff, FOG_DENSITY);
+  scene.fog = haze;
+
+  // The node form of the fog. Three.js builds its own exponential squared node
+  // from `scene.fog` when this field is empty, and that node holds one density
+  // for the whole world. `scene.fogNode` takes the place of it. The color
+  // uniform reads `horizonColor` in place, exactly as src/render/ground.ts
+  // does, so the fog color follows the sun with no work in the frame.
+  const fogDensity = uniform(FOG_DENSITY);
+  const fogColor = uniform(horizonColor);
+  scene.fogNode = fog(fogColor, heightFogFactor(fogDensity));
 
   // The generator binds to one renderer. It is built on the first use, from the
   // renderer that the caller passes in, so `update` really reads its argument.
@@ -454,7 +585,8 @@ export function createSky(renderer: WebGPURenderer, scene: Scene): SkyBundle {
     setSunElevation(elevationRad);
     setSunLight(sun, elevationDeg);
     computeHorizonColor(elevationRad, horizonColor);
-    fog.color.copy(horizonColor);
+    // src/render/clouds.ts reads the fog color, so the object keeps it as well.
+    haze.color.copy(horizonColor);
 
     sunMoved = true;
   }
@@ -497,7 +629,18 @@ export function createSky(renderer: WebGPURenderer, scene: Scene): SkyBundle {
     else environmentScene.remove(sky);
   }
 
+  /**
+   * Write the density of the air at the camera. Read the note on the height
+   * law at the top of this file.
+   */
+  function setViewHeight(height: number): void {
+    const density = FOG_DENSITY * Math.exp(-Math.max(0, height) / FOG_SCALE_HEIGHT);
+    haze.density = density;
+    fogDensity.value = density;
+  }
+
   setSunAngles(DEFAULT_SUN_ELEVATION_DEG, DEFAULT_SUN_AZIMUTH_DEG);
+  setViewHeight(0);
   regenerateEnvironment(renderer, scene);
   sunMoved = false;
 
@@ -507,6 +650,7 @@ export function createSky(renderer: WebGPURenderer, scene: Scene): SkyBundle {
     sunDirection,
 
     setSunAngles,
+    setViewHeight,
 
     update(activeRenderer: WebGPURenderer, activeScene: Scene): void {
       if (!sunMoved) return;
@@ -515,7 +659,8 @@ export function createSky(renderer: WebGPURenderer, scene: Scene): SkyBundle {
     },
 
     dispose(): void {
-      if (scene.fog === fog) scene.fog = null;
+      if (scene.fog === haze) scene.fog = null;
+      scene.fogNode = null;
       if (environmentTarget !== null && scene.environment === environmentTarget.texture) {
         scene.environment = null;
       }

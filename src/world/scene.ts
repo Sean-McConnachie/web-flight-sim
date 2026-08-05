@@ -108,6 +108,11 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
       // reads the view direction, so the move changes no color.
       sky.sky.position.copy(cameraPosition);
 
+      // The haze thins with height, so the fog needs the height of the camera.
+      // This call must come BEFORE the deck reads `scene.fog`, because the deck
+      // hazes itself with the same density.
+      sky.setViewHeight(cameraPosition.y);
+
       // Sort the buildings and the trees into their levels of detail, and move
       // the wind in the trees.
       scatterTime += dt;
