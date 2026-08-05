@@ -45,6 +45,7 @@ function strip(over: Partial<SurfaceDef> = {}): SurfaceDef {
     flapEffectiveness: 0,
     flapClMaxDelta: 0,
     flapAlphaDelta: 0,
+    flapCdDelta: 0,
     hasSlat: false,
     slatAlphaDelta: 0,
     slatDeployAlpha: 0,
@@ -403,6 +404,68 @@ describe('the control and the flap', () => {
     const slow = s.result.alpha;
     run(s, flightVelocity(0.86 * SPEED_OF_SOUND, 0), { controls, steps: 10 });
     expect(s.result.alpha).toBeLessThan(0.6 * slow);
+  });
+});
+
+describe('the profile drag of the flap', () => {
+  // The wing strip numbers of src/aircraft/me262/geometry.ts, on one strip that
+  // the flap covers over its whole span.
+  const CD_DELTA = 0.85 * 0.257 ** 1.38; // 0.1303
+  const flapped = strip({
+    flapIndex: 1,
+    flapEffectiveness: -0.26,
+    flapClMaxDelta: 1.2 / (50 * DEG),
+    flapAlphaDelta: (1.2 * DEG) / (50 * DEG),
+    flapCdDelta: CD_DELTA,
+  });
+
+  it('adds nothing while the flap is up', () => {
+    const controls = new Float64Array([0, 0, 0, 0]);
+    const a = createSurface(flapped);
+    const b = createSurface({ ...flapped, flapCdDelta: 0 });
+    run(a, flightVelocity(100, 4 * DEG), { controls, steps: 400 });
+    run(b, flightVelocity(100, 4 * DEG), { controls, steps: 400 });
+    expect(a.result.cd).toBeCloseTo(b.result.cd, 12);
+  });
+
+  it('follows the sin squared law of Hoerner at the two flap settings', () => {
+    // 0.85 (cf / c)^1.38 sin^2(deflection), with a flap chord ratio of 0.257.
+    // The law gives 0.0152 at 20 degrees and 0.0765 at 50 degrees.
+    for (const deg of [20, 50]) {
+      const controls = new Float64Array([0, deg * DEG, 0, 0]);
+      const a = createSurface(flapped);
+      const b = createSurface({ ...flapped, flapCdDelta: 0 });
+      run(a, flightVelocity(100, 4 * DEG), { controls, steps: 400 });
+      run(b, flightVelocity(100, 4 * DEG), { controls, steps: 400 });
+      const expected = CD_DELTA * Math.sin(deg * DEG) ** 2;
+      expect(a.result.cd - b.result.cd).toBeCloseTo(expected, 10);
+    }
+  });
+
+  it('makes the landing flap drag more than the clean section at the same angle', () => {
+    // THIS IS THE FAULT OF BEAD b62. The flap works by a shift of the table
+    // angle, and a shift along a drag polar can move cd DOWN, so the lift fields
+    // alone let a 50 degree slotted flap REDUCE the drag of its own section.
+    const down = new Float64Array([0, 50 * DEG, 0, 0]);
+    const up = new Float64Array([0, 0, 0, 0]);
+    for (const deg of [-4, 0, 4, 8]) {
+      const a = createSurface(flapped);
+      const b = createSurface(flapped);
+      run(a, flightVelocity(100, deg * DEG), { controls: down, steps: 400 });
+      run(b, flightVelocity(100, deg * DEG), { controls: up, steps: 400 });
+      expect(a.result.cd).toBeGreaterThan(b.result.cd);
+    }
+  });
+
+  it('keeps its drag when a shock takes the lift power of the flap away', () => {
+    // The Mach correction cuts the lift power of a control. It must not cut the
+    // drag: a flap that lost its power to a shock is still out in the flow.
+    const controls = new Float64Array([0, 50 * DEG, 0, 0]);
+    const a = createSurface(flapped);
+    const b = createSurface({ ...flapped, flapCdDelta: 0 });
+    run(a, flightVelocity(0.86 * SPEED_OF_SOUND, 0), { controls, steps: 10 });
+    run(b, flightVelocity(0.86 * SPEED_OF_SOUND, 0), { controls, steps: 10 });
+    expect(a.result.cd - b.result.cd).toBeCloseTo(CD_DELTA * Math.sin(50 * DEG) ** 2, 10);
   });
 });
 

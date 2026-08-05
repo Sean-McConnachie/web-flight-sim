@@ -84,6 +84,9 @@
  * long drag down the runway costs braking. The model is one temperature per
  * wheel, which is enough to punish a pilot who rides the brakes.
  *
+ * THIS FILE HOLDS THE ONLY FADE MODEL OF THE PROJECT, and `update` takes the RAW
+ * pilot command. See the note above BRAKE_HEAT_CAPACITY.
+ *
  *
  * 4. FRAMES
  *
@@ -417,53 +420,111 @@ const WHEEL_SPIN_DOWN_TIME = 20; // s
  * torque that makes a force is the one below, so the two disagreed by a factor
  * of 2.7 in silence. systems.ts now imports this constant.
  *
- * Two bounds fix the value.
+ * THE RUN UP MEASURES THIS BRAKE. The pilot notes ask the brakes to hold the
+ * aircraft against both engines at full power, which is 17.6 kN, and the same
+ * notes call the brakes weak. Two braked wheels share the thrust, so each
+ * contact patch passes 8.8 kN, and at the 0.42 m rolling radius that is
+ * 3.7 kN m. The value below sits just over that bound: 4.2 kN m holds 20.0 kN
+ * against 17.6 kN, a margin of 14 percent. A brake that a pilot calls weak and
+ * that just holds the run up is a brake near its bound, not one far above it.
  *
- * THE LOWER BOUND IS THE RUN UP. The pilot notes ask the brakes to hold the
- * aircraft against both engines at full power, which is 17.6 kN. Two braked
- * wheels share it, so each contact patch passes 8.8 kN, and at the 0.42 m
- * rolling radius that is 3.7 kN m. A brake below that cannot hold the run up.
+ * WHY BEAD b33 TOOK IT DOWN FROM 10000 N m. The old value came from a design
+ * rule of the JET AGE: size the brake past the tire, so that full pedal reaches
+ * the whole of the grip and an anti-skid unit modulates it. The Me 262 carried
+ * no anti-skid, and 10 kN m would hold 47.6 kN, which is 2.7 times the thrust of
+ * both engines. No pilot calls such a brake weak.
  *
- * THE UPPER BOUND IS THE TIRE. A main leg carries 28.8 kN at rest and
- * LONG_PEAK_MU is 0.8, so one main tire passes 23.0 kN at the peak of its curve,
- * which is 9.7 kN m at the same radius. Past that torque the brake beats the
- * tire and the wheel locks.
+ * The old value also killed the fade model below. A brake past the tire locks
+ * the wheel at the first touch of the pedal. A locked wheel does not turn, so it
+ * slides no lining against a drum and the pack takes NO energy at all: bead b33
+ * measured 288 K at the start of a full brake landing roll and 294 K at the end
+ * of it. The whole 7.6 MJ went into the tire, the roll ran 281 m at a mean of
+ * 0.52 g, and the aircraft stopped harder than a modern jet with anti-skid.
  *
- * A real aircraft is designed so that the TIRE is the limit and not the brake.
- * The pilot must be able to lock a wheel, but only just, so that full pedal
- * reaches the whole of the grip the tire has and no more. The value sits 3.5
- * percent over the tire bound. It reaches the peak of the tire curve at the
- * static load, and it locks the wheel at any load below it, which is every part
- * of a landing roll where the wing still carries weight and where braking has
- * moved load onto the nose.
+ * At 4200 N m the wheel keeps turning at a slip of 0.025, the pack takes
+ * 3.6 MJ, it heats from 288 K to 541 K, and the fade takes the deceleration from
+ * 0.36 g at the start of the roll to 0.29 g at the end. The roll runs 389 m.
+ * That is the aircraft the pilot notes describe.
  *
- * The old 12000 N m sat 24 percent over the tire bound. It made no measured
- * difference, because both values lock the wheel and a locked tire slides at
- * whatever the curve gives, but it named a brake that the tire could never use.
- * Source: Wendel notes, paragraph 2, and ESDU 71025 through LONG_PEAK_MU.
- * Confidence: estimate.
+ * Source: Wendel notes, paragraph 2, for the run up and for the weak brakes.
+ * Confidence: estimate, bounded below by the run up.
  */
-export const MAX_BRAKE_TORQUE = 10000; // N m
+export const MAX_BRAKE_TORQUE = 4200; // N m
 
 /**
- * Heat capacity of one brake pack, J / K. A steel disc pack and its carrier of
- * about 45 kg, at 550 J per kg per K. A hard stop from 70 m/s puts about 8 MJ
- * into each main brake, which is a rise near 320 K. Confidence: estimate.
+ * THIS FILE HOLDS THE ONLY BRAKE FADE MODEL. src/aircraft/me262/systems.ts ran a
+ * second one of its own, with its own heat capacity, its own cooling time and
+ * its own fade curve, and BOTH applied: systems.ts multiplied the pilot command
+ * by its own fade before it handed the command to `update` below, which then
+ * multiplied the torque by this one. The brakes therefore faded about twice as
+ * fast as either model meant them to. src/physics sits below src/aircraft and
+ * cannot import upward, which is the same reason MAX_BRAKE_TORQUE lives here, so
+ * this file keeps the model and systems.ts now passes the raw pilot command.
+ *
+ * Heat capacity of one brake pack, J / K.
+ *
+ * The Me 262 braked on a drum inside each 840 by 300 mm main wheel. The metal
+ * that takes the heat of one stop is the drum, the shoes and the hub, about
+ * 25 kg of steel, at a mean 500 J per kg per K over the working range.
+ *
+ * SIZE CHECK. The aircraft touches down at 175 km/h, which is 48.6 m/s, and at
+ * 6396 kg it carries 7.6 MJ. The two brakes take at most half of that each, so
+ * one pack takes 3.8 MJ and rises about 300 K. That puts a full effort landing
+ * roll INSIDE the fade band below, which is what the type was known for: weak
+ * brakes and a long landing run. A pack of twice this size would never reach the
+ * band at all, and the fade would be a model that never acts.
+ * Source: sized from the wheel of the A-1a. Confidence: estimate.
  */
-const BRAKE_HEAT_CAPACITY = 25000; // J/K
+const BRAKE_HEAT_CAPACITY = 12500; // J/K
 
-/** Cooling conductance of one brake pack to the air, W / K. */
-const BRAKE_COOLING = 210; // W/K
+/**
+ * Cooling conductance of one brake pack to the air, W / K.
+ *
+ * A drum of about 0.5 m2 of wetted area in the wheel well passes 30 to 50 W/K to
+ * the air on the roll, and it radiates a further 10 W/K at 700 K. The value is
+ * one number for both, so the pack cools with a time constant of 280 s and
+ * reaches the air again in about ten minutes. Confidence: estimate.
+ */
+const BRAKE_COOLING = 45; // W/K
 
 /** Air temperature the brake cools toward, K. ISA sea level. */
 const AMBIENT_TEMPERATURE = 288.15; // K
 
-/** Temperature where the pack starts to fade and where the fade is complete. */
-const BRAKE_FADE_START = 575; // K
-const BRAKE_FADE_FULL = 950; // K
+/**
+ * Temperature where the pack starts to fade and where the fade is complete.
+ *
+ * The lining of 1944 is an asbestos and resin compound. Its friction holds to
+ * about 200 C, falls as the resin binder starts to break down, and is gone by
+ * about 400 C, where the binder has charred. The two anchors below are those
+ * temperatures in kelvin.
+ * Source: the fade behavior of asbestos resin friction linings.
+ * Confidence: estimate on the values, firm on the shape.
+ */
+const BRAKE_FADE_START = 475; // K
+const BRAKE_FADE_FULL = 675; // K
 
-/** Fraction of the cold torque the pack loses at BRAKE_FADE_FULL. */
-const BRAKE_FADE_DEPTH = 0.65;
+/**
+ * Fraction of the cold torque the pack loses at BRAKE_FADE_FULL.
+ *
+ * A charred organic lining keeps about half of its cold friction. A larger depth
+ * would say the brake stops working, and it does not: it gets weak.
+ * Confidence: estimate.
+ */
+const BRAKE_FADE_DEPTH = 0.5;
+
+/**
+ * Fraction of the cold brake torque a pack at this temperature still gives.
+ *
+ * The gauge, the tests and `update` all read this one function, so no second
+ * copy of the curve can appear anywhere.
+ */
+export function brakeFade(temperature: number): number {
+  return 1 - BRAKE_FADE_DEPTH * smoothstep(BRAKE_FADE_START, BRAKE_FADE_FULL, temperature);
+}
+
+/** The two anchors of the fade curve, K. The unit test reads them. */
+export const BRAKE_FADE_START_TEMPERATURE = BRAKE_FADE_START;
+export const BRAKE_FADE_FULL_TEMPERATURE = BRAKE_FADE_FULL;
 
 // ---------------------------------------------------------------------------
 // Me 262 A-1a gear geometry
@@ -817,9 +878,9 @@ class Gear implements LandingGear {
     out: Wrench,
   ): void {
     // The pack fades from its own temperature, so the fade uses the value the
-    // last step left behind.
-    const fade = 1 - BRAKE_FADE_DEPTH * smoothstep(BRAKE_FADE_START, BRAKE_FADE_FULL, leg.brakeTemp);
-    const brakeTorque = MAX_BRAKE_TORQUE * brakeCommand * fade;
+    // last step left behind. `brakeCommand` is the RAW pilot command. Nothing
+    // above this file fades it first. See BRAKE_HEAT_CAPACITY.
+    const brakeTorque = MAX_BRAKE_TORQUE * brakeCommand * brakeFade(leg.brakeTemp);
     const wheelInertia = WHEEL_INERTIA_FACTOR * Math.pow(def.wheelRadius, 4);
 
     if (down <= GEAR_DOWN_THRESHOLD) {
@@ -1007,7 +1068,7 @@ class Gear implements LandingGear {
       // and with no brake at all there is no hold and the wheel rolls free.
       //
       // The two Jumo 004 at full power make 17.6 kN. The main tires can pass
-      // 0.8 * 57.6 = 46 kN and the brakes can react 12000 / 0.42 = 28.6 kN per
+      // 0.8 * 57.6 = 46 kN and the brakes can react 10000 / 0.42 = 23.8 kN per
       // wheel, so both have room to spare and the aircraft stands still. That is
       // the run up the pilot notes ask for.
       const holdMu = Math.min(longPeak, brakeTorque / (def.wheelRadius * load));

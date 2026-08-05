@@ -59,7 +59,7 @@
  * no browser API.
  */
 
-import { clamp, smoothstep } from '@/math/tables';
+import { clamp } from '@/math/tables';
 import { DEG, kmhToMs } from '@/math/units';
 import { MAX_BRAKE_TORQUE } from '@/physics/gear';
 import {
@@ -210,35 +210,23 @@ export const SLAT_TRAVEL_TIME = 0.5; // s
  *
  * THIS MODULE DOES NOT OWN THE NUMBER. src/physics/gear.ts owns it, because
  * that is the file where the torque meets the tire and becomes a force. This
- * module only reports the torque to the gauge and works out the heat, so a
- * second value here could only ever be wrong. It held one, 4500 N m against the
- * 12000 N m of gear.ts, and the gauge read a brake the aircraft did not have.
- * The name stays, because the gauge and the tests already use it.
+ * module only reports the torque to the gauge, so a second value here could only
+ * ever be wrong. It held one, 4500 N m against the 12000 N m of gear.ts, and the
+ * gauge read a brake the aircraft did not have. The name stays, because the
+ * gauge and the tests already use it.
+ *
+ * THE HEAT AND THE FADE LEFT THIS MODULE FOR THE SAME REASON. This file ran a
+ * full brake fade model of its own, with its own heat capacity, its own cooling
+ * time and its own fade curve. It multiplied the pilot command by that fade
+ * before it handed the command on, and src/physics/gear.ts then multiplied the
+ * torque by ITS fade as well, so the brakes faded about twice as fast as either
+ * model meant. gear.ts keeps the model, because that is where the torque becomes
+ * a force and where the wheel rate that makes the heat is known. A locked wheel
+ * makes no heat in the pack at all, and only gear.ts can see that. This module
+ * now passes the RAW pilot command through in `state.brakeLeft` and
+ * `state.brakeRight`.
  */
 export const BRAKE_TORQUE_MAX = MAX_BRAKE_TORQUE; // N m
-
-/** Rolling radius of the main wheel, 840 by 300 mm tire. Confidence: firm. */
-export const WHEEL_RADIUS = 0.42; // m
-
-/**
- * Heat capacity of one brake, wheel and leg together.
- *
- * A full stop from 60 m/s at 6400 kg puts 11.5 MJ into the two brakes. With
- * 30 kJ per kelvin in each one, that stop raises each brake by about 190 K,
- * which is where the fade below starts. The Me 262 was known for weak brakes and
- * long landing runs, so the model must show that. Confidence: estimate.
- */
-export const BRAKE_HEAT_CAPACITY = 30000; // J/K
-
-/** Time constant of the brake cooling to the outside air. Confidence: estimate. */
-export const BRAKE_COOL_TIME = 120; // s
-
-/** Where the fade starts and where it reaches its full depth, K above ambient. */
-const BRAKE_FADE_ONSET = 200; // K
-const BRAKE_FADE_FULL = 500; // K
-
-/** The fraction of the torque a fully hot brake loses. Confidence: estimate. */
-const BRAKE_FADE_DEPTH = 0.5;
 
 // ---------------------------------------------------------------------------
 // Damage.
@@ -267,9 +255,9 @@ export interface SystemsState {
   gearPosition: number;
   /** 0 shut, 1 fully out. */
   slatPosition: number;
-  /** 0 to 1, the braking the left wheel gives NOW, after the heat fade. */
+  /** 0 to 1, the RAW left brake command. src/physics/gear.ts adds the fade. */
   brakeLeft: number;
-  /** 0 to 1, the braking the right wheel gives NOW, after the heat fade. */
+  /** 0 to 1, the RAW right brake command. src/physics/gear.ts adds the fade. */
   brakeRight: number;
   /** Fuel on board, kg. */
   fuelMass: number;
@@ -281,7 +269,11 @@ export interface Me262Systems {
   readonly state: SystemsState;
   commandFlaps(s: FlapSetting): void;
   commandGear(down: boolean): void;
-  /** Both values are pilot commands from 0 to 1. The fade acts on top of them. */
+  /**
+   * Both values are pilot commands from 0 to 1. They pass straight through to
+   * `state.brakeLeft` and `state.brakeRight`. src/physics/gear.ts owns the heat
+   * and the fade that act on top of them.
+   */
   setBrakes(left: number, right: number): void;
   update(outerWingAlpha: number, equivalentAirspeed: number, fuelFlow: number, dt: number): void;
   /** Writes the flap deflection and the slat position into the aero control array. */
@@ -297,12 +289,13 @@ export interface Me262Systems {
   mainGearPosition(): number;
   /** 0 up, 1 down. The nose wheel follows the mains. */
   noseGearPosition(): number;
-  /** Braking torque of one wheel, N m, after the fade. */
+  /**
+   * Braking torque one wheel asks for at a COLD pack, N m. The pack of
+   * src/physics/gear.ts takes the fade off this value, and only that file knows
+   * the temperature, so the gauge here reads the command and not the answer.
+   */
   brakeTorqueLeft(): number;
   brakeTorqueRight(): number;
-  /** Brake temperature above the outside air, K. */
-  brakeHeatLeft(): number;
-  brakeHeatRight(): number;
   /** The flap deflection the aerodynamics sees, rad. */
   flapDeflection(): number;
 }
@@ -350,11 +343,6 @@ export function gearDragAreaAt(position: number): number {
   return GEAR_DRAG_AREA * p + GEAR_TRANSIT_DRAG_AREA * 4 * p * (1 - p);
 }
 
-/** Returns the fraction of the brake torque that a brake at this heat still gives. */
-export function brakeFade(heat: number): number {
-  return 1 - BRAKE_FADE_DEPTH * smoothstep(BRAKE_FADE_ONSET, BRAKE_FADE_FULL, heat);
-}
-
 /**
  * Builds the systems of one aircraft. The tanks start full, the gear starts
  * down, the flap starts up and the slat starts shut.
@@ -375,8 +363,6 @@ export function createMe262Systems(): Me262Systems {
   let slatTarget = 0;
   let brakeCommandLeft = 0;
   let brakeCommandRight = 0;
-  let heatLeft = 0;
-  let heatRight = 0;
 
   /** Moves a position toward its target at a rate and returns the new value. */
   const drive = (position: number, target: number, rate: number, dt: number): number => {
@@ -460,20 +446,13 @@ export function createMe262Systems(): Me262Systems {
         );
       }
 
-      // The brakes. A wheel that is still inside the wing makes no heat, so the
-      // model gates the heat on the main gear position. The heat rises with the
-      // work the brake does, which is the torque times the wheel speed.
-      const rolling = api.mainGearPosition() >= 1 ? Math.max(equivalentAirspeed, 0) : 0;
-      const fadeLeft = brakeFade(heatLeft);
-      const fadeRight = brakeFade(heatRight);
-      state.brakeLeft = brakeCommandLeft * fadeLeft;
-      state.brakeRight = brakeCommandRight * fadeRight;
-      const workLeft = (state.brakeLeft * BRAKE_TORQUE_MAX * rolling) / WHEEL_RADIUS;
-      const workRight = (state.brakeRight * BRAKE_TORQUE_MAX * rolling) / WHEEL_RADIUS;
-      heatLeft += (workLeft / BRAKE_HEAT_CAPACITY - heatLeft / BRAKE_COOL_TIME) * dt;
-      heatRight += (workRight / BRAKE_HEAT_CAPACITY - heatRight / BRAKE_COOL_TIME) * dt;
-      heatLeft = Math.max(0, heatLeft);
-      heatRight = Math.max(0, heatRight);
+      // The brakes. The command passes straight through. src/physics/gear.ts
+      // holds the pack temperature and the fade, because that is where the
+      // torque meets the tire and where the wheel rate that makes the heat is
+      // known. A wheel that is still inside the bay makes no force and no heat,
+      // and gear.ts gates both on the gear position it already reads.
+      state.brakeLeft = brakeCommandLeft;
+      state.brakeRight = brakeCommandRight;
 
       // The fuel. src/aircraft/me262/mass.ts owns the four tanks and the order
       // they empty in, which puts the rear auxiliary tank first and the two main
@@ -514,14 +493,6 @@ export function createMe262Systems(): Me262Systems {
 
     brakeTorqueRight(): number {
       return state.brakeRight * BRAKE_TORQUE_MAX;
-    },
-
-    brakeHeatLeft(): number {
-      return heatLeft;
-    },
-
-    brakeHeatRight(): number {
-      return heatRight;
     },
 
     flapDeflection(): number {

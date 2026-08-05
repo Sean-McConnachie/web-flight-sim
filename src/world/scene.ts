@@ -17,6 +17,9 @@ import type { ShadowRig } from '@/render/shadows';
 import { createShadowRig } from '@/render/shadows';
 import type { SkyBundle } from '@/render/sky';
 import { createSky } from '@/render/sky';
+import { createTargetField } from '@/render/weapons';
+import type { Target } from '@/weapons/targets';
+import { placeTargets } from '@/weapons/targets';
 import { createRunway } from '@/world/runway';
 import { createScatteredWorld } from '@/world/scatter';
 
@@ -29,6 +32,13 @@ export interface World {
 
   /** The cascade shadow rig of the sun. Set `enabled` to compare the cost. */
   shadows: ShadowRig;
+
+  /**
+   * The ground targets, in world NED. src/main.ts hands the same list to
+   * src/weapons/armament.ts, so the box a shell tests against is the box the
+   * model stands in.
+   */
+  targets: readonly Target[];
 
   /** Advance the world. `cameraPosition` is in the render frame. */
   update(dt: number, cameraPosition: Vector3): void;
@@ -57,6 +67,13 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
   root.add(scatter.root);
   let scatterTime = 0;
 
+  // The ground targets. src/weapons/targets.ts places them with the same clear
+  // zone and approach corridor rules the scatter uses, so nothing stands where
+  // the aircraft flies.
+  const targets = placeTargets();
+  const targetField = createTargetField(targets);
+  root.add(targetField.root);
+
   scene.add(root);
 
   renderer.shadowMap.enabled = config.render.shadowsEnabled;
@@ -73,6 +90,7 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
     root,
     sky,
     shadows,
+    targets,
 
     update(dt: number, cameraPosition: Vector3): void {
       // The sky box is a background, so it rides with the camera. The shader
@@ -83,6 +101,9 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
       // the wind in the trees.
       scatterTime += dt;
       scatter.update(cameraPosition, scatterTime);
+
+      // Show any target that burned since the last frame, and move the fires.
+      targetField.update(targets, scatterTime);
 
       // Keep the shadow volume over the camera. The rig angle does not change.
       rigOffset.copy(sky.sun.position).sub(sky.sun.target.position);
@@ -98,6 +119,7 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
 
     dispose(): void {
       shadows.dispose();
+      targetField.dispose();
       scatter.dispose();
       runway.dispose();
       ground.dispose();

@@ -44,14 +44,19 @@ import type { InputSystem } from '@/input/bindings';
 import { createInputSystem } from '@/input/bindings';
 import { clamp } from '@/math/tables';
 import { equivalentAirspeed } from '@/physics/atmosphere';
+import type { Wrench } from '@/physics/rigidbody';
+import { createArmament } from '@/weapons/armament';
 import { createCameraRig } from '@/render/cameras';
 import { createForceArrows } from '@/render/force-arrows';
 import { nedQuatToThree, nedToThree } from '@/render/frames';
 import { createFreeCamera } from '@/render/free-camera';
 import type { Me262Pivots } from '@/render/models/me262';
+import type { Me262Cockpit } from '@/render/models/cockpit';
+import { ME262_COCKPIT_TRAVEL, createMe262Cockpit } from '@/render/models/cockpit';
 import { ME262_POSE, createMe262Model } from '@/render/models/me262';
 import { createPostChain } from '@/render/postfx';
 import { createRenderer, isWebGPUAvailable } from '@/render/renderer';
+import { createWeaponEffects } from '@/render/weapons';
 import type { TelemetrySample } from '@/ui/debug-overlay';
 import { createDebugOverlay } from '@/ui/debug-overlay';
 import { createHud } from '@/ui/hud';
@@ -62,15 +67,28 @@ import { createWorld } from '@/world/scene';
 const FREE_CAMERA_OFFSET_NED = new Vector3(-40, -25, -14);
 
 /**
- * Rounds of 30 mm on board.
+ * Where the recoil of the guns goes into the flight model.
  *
- * The A-1a carries four MK 108. The upper pair holds 100 rounds each and the
- * lower pair holds 80 each. Source: CONVENTIONS section 8 for the guns,
- * pilot handbook for the load, confidence firm. Nothing fires yet, so the
- * count is fixed. The bead that builds the guns replaces this constant with
- * the real count.
+ * src/weapons/mk108.ts builds a BODY wrench about the center of gravity, and
+ * src/aircraft/aircraft.ts must add it to the wrench of every Runge-Kutta
+ * stage, next to the thrust and the gear drag. The hook is one optional member
+ * on `Aircraft` and one line inside its wrench source:
+ *
+ *   in the Aircraft interface     externalWrench: Wrench;
+ *   in createAircraft             const externalWrench: Wrench = createWrench();
+ *   in the api object             externalWrench,
+ *   in source(), after block 4    addWrench(out, externalWrench);
+ *
+ * Until that hook lands the member is not there, `externalWrench` reads
+ * undefined, and the block below does nothing. The guns still fire and the
+ * rounds still fly. `wrench` is a member `Aircraft` already has, and it is here
+ * so that TypeScript does not read this type as a weak type with nothing in
+ * common with `Aircraft`.
  */
-const AMMUNITION_ROUNDS = 360;
+interface RecoilTarget {
+  readonly wrench: Wrench;
+  readonly externalWrench?: Wrench;
+}
 
 /** What the head up display reads from one engine. The HUD type is readonly. */
 interface EngineReadoutFields {
@@ -225,6 +243,38 @@ function driveModel(
   pivots.canopy.rotation.x = 0;
 }
 
+/**
+ * Drives the five pivots of the virtual cockpit from the aircraft.
+ *
+ * Section 4 of src/render/models/cockpit.ts fixes the sign of every pivot. The
+ * stick and the pedals follow the CONTROL ARRAY and not the raw stick, for the
+ * same reason the exterior surfaces do.
+ */
+function driveCockpit(cockpit: Me262Cockpit, aircraft: Aircraft, throttle: number): void {
+  const controls = aircraft.controls;
+  const travel = ME262_COCKPIT_TRAVEL;
+
+  // A positive elevator command pitches the nose UP. A positive stick angle
+  // pulls the grip AFT, which is the same direction, so the sign holds.
+  cockpit.pivots.stick.rotation.x =
+    clamp(controls[1] / ELEVATOR_LIMIT, -1, 1) * travel.stickPitch;
+  // A positive aileron command rolls RIGHT. A positive stick angle moves the
+  // grip to PORT, so the sign turns over.
+  cockpit.pivots.stick.rotation.z =
+    -clamp(controls[0] / AILERON_LIMIT, -1, 1) * travel.stickRoll;
+
+  // A positive rudder command yaws the nose RIGHT, which pushes the RIGHT
+  // pedal forward. A positive pedal angle is forward on both sides.
+  const rudder = clamp(controls[2] / RUDDER_LIMIT, -1, 1) * travel.pedal;
+  cockpit.pivots.pedalRight.rotation.x = rudder;
+  cockpit.pivots.pedalLeft.rotation.x = -rudder;
+
+  // One throttle axis drives both levers. The axis runs from 0 to 1.
+  const lever = clamp(throttle, 0, 1) * travel.throttle;
+  cockpit.pivots.throttleLeft.rotation.x = lever;
+  cockpit.pivots.throttleRight.rotation.x = lever;
+}
+
 /** Copies the pilot command out of the input system, without the look axes. */
 function readInput(input: InputSystem): AircraftInput {
   return input.state;
@@ -252,9 +302,26 @@ async function main(): Promise<void> {
   scene.add(model.root);
   const wheelAngles = [0, 0, 0];
 
+  // The interior is invisible from outside, so it is built on the FIRST entry
+  // into the cockpit view and hidden in every other view. A flight that never
+  // uses that view therefore never pays for it. See cockpit.ts section 6.
+  let cockpit: Me262Cockpit | null = null;
+
   const arrows = createForceArrows(aircraft.assembly.surfaces.length);
   model.root.add(arrows.root);
   arrows.visible = false;
+
+  // --- The guns ----------------------------------------------------------
+  // The armament owns the four MK 108, the rounds in the air and the hits. It
+  // reads the SAME target list the world drew, so the box a shell tests against
+  // is the box the model stands in.
+  const armament = createArmament(world.targets);
+  const effects = createWeaponEffects();
+  scene.add(effects.root);
+  // The flashes ride with the aircraft. In the world frame they would sit
+  // behind the muzzle at 250 m/s and lag by one frame of interpolation.
+  model.root.add(effects.muzzleRoot);
+  const recoilTarget: RecoilTarget = aircraft;
 
   // --- The input ---------------------------------------------------------
   // The differential brake only works while the wheels touch the ground, so
@@ -324,7 +391,7 @@ async function main(): Promise<void> {
     fuelMass: 0,
     gearPosition: 0,
     flapPosition: 0,
-    rounds: AMMUNITION_ROUNDS,
+    rounds: armament.roundsLeft,
   };
 
   // --- The render pose ---------------------------------------------------
@@ -359,6 +426,7 @@ async function main(): Promise<void> {
   function respawn(): void {
     banner.hide();
     aircraft.spawnOnRunway();
+    armament.reset();
     previousPosition.copy(aircraft.state.body.position);
     previousOrientation.copy(aircraft.state.body.orientation);
     nedToThree(aircraft.state.body.position, renderPosition);
@@ -397,6 +465,17 @@ async function main(): Promise<void> {
       if (input.state.toggleDebug) pendingToggleDebug = true;
       previousPosition.copy(aircraft.state.body.position);
       previousOrientation.copy(aircraft.state.body.orientation);
+
+      // The guns run BEFORE the flight model, so the recoil of this step is in
+      // place when the wrench source of the step reads it.
+      armament.fixedUpdate(aircraft.state.body, input.state.fireCannon, dt);
+      const recoil = recoilTarget.externalWrench;
+      if (recoil !== undefined) {
+        recoil.force.copy(armament.recoil.force);
+        recoil.moment.copy(armament.recoil.moment);
+      }
+      effects.collect(armament);
+
       aircraft.fixedUpdate(readInput(input), dt);
     },
 
@@ -445,6 +524,18 @@ async function main(): Promise<void> {
         );
       }
 
+      // --- The virtual cockpit -----------------------------------------
+      // The view is chosen above, so this test reads the view of THIS frame.
+      const inCockpit = !useFreeCamera && rig.mode === 'cockpit';
+      if (inCockpit && cockpit === null) {
+        cockpit = createMe262Cockpit();
+        model.root.add(cockpit.root);
+      }
+      if (cockpit !== null) {
+        cockpit.setVisible(inCockpit);
+        if (inCockpit) driveCockpit(cockpit, aircraft, input.state.throttle);
+      }
+
       // The arrows hang under the model, so their frame is the body frame
       // mapped through frames.ts. See src/render/force-arrows.ts.
       if (arrows.visible) {
@@ -478,6 +569,10 @@ async function main(): Promise<void> {
       readout.fuelMass = systems.fuelMass;
       readout.gearPosition = systems.gearPosition;
       readout.flapPosition = systems.flapPosition;
+      readout.rounds = armament.roundsLeft;
+
+      // The tracers, the bursts and the four muzzle flashes.
+      effects.update(armament, frameDt);
       hud.visible = rig.mode !== 'cockpit';
       hud.update(telemetry, readout);
 
@@ -499,6 +594,7 @@ async function main(): Promise<void> {
     rig,
     hud,
     loop,
+    armament,
   };
 
   respawn();

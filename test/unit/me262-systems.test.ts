@@ -134,6 +134,7 @@ function strip(over: Partial<SurfaceDef> = {}): SurfaceDef {
     flapEffectiveness: 0,
     flapClMaxDelta: 0,
     flapAlphaDelta: 0,
+    flapCdDelta: 0,
     hasSlat: false,
     slatAlphaDelta: 0,
     slatDeployAlpha: 0,
@@ -173,6 +174,8 @@ const FLAPPED_STRIP = strip({
   flapEffectiveness: -0.26,
   flapClMaxDelta: 1.2 / FLAP_LANDING_ANGLE,
   flapAlphaDelta: (1.2 * DEG) / FLAP_LANDING_ANGLE,
+  // 0.85 (cf / c)^1.38, with the 25.7 percent flap chord of the aircraft.
+  flapCdDelta: 0.85 * 0.257 ** 1.38,
 });
 
 describe('the flap raises the peak lift of its section and stalls it earlier', () => {
@@ -492,38 +495,35 @@ describe('the wheel brakes', () => {
     expect(systems.brakeTorqueRight()).toBe(0);
   });
 
-  it('fade as the heat builds and come back as the brake cools', () => {
+  it('pass the raw pilot command through, because gear.ts owns the fade', () => {
+    // BEAD b63. This module used to hold a brake fade model of its own AND
+    // multiply the command by it. src/physics/gear.ts holds a second one and
+    // multiplies the torque by that, so both applied and the brakes faded about
+    // twice as fast as either model meant. gear.ts keeps the model, so the
+    // command that leaves this module must be the command the pilot gave.
     const systems = createMe262Systems();
     systems.setBrakes(1, 1);
-    // A landing roll from 60 m/s, held for half a minute.
+    // A landing roll from 60 m/s, held for half a minute. Nothing here may take
+    // the command down, whatever the wheel has been doing.
     for (let t = 0; t < 30; t += 1 / 60) {
       systems.update(0, 60, 0, 1 / 60);
     }
-    const hot = systems.brakeTorqueLeft();
-    expect(systems.brakeHeatLeft()).toBeGreaterThan(100);
-    expect(hot).toBeLessThan(BRAKE_TORQUE_MAX);
+    expect(systems.state.brakeLeft).toBe(1);
+    expect(systems.state.brakeRight).toBe(1);
+    expect(systems.brakeTorqueLeft()).toBeCloseTo(BRAKE_TORQUE_MAX, 6);
 
-    // Let go of the brakes and let the wheel cool.
-    systems.setBrakes(0, 0);
-    for (let t = 0; t < 600; t += 1 / 60) {
-      systems.update(0, 0, 0, 1 / 60);
-    }
-    systems.setBrakes(1, 1);
-    systems.update(0, 20, 0, 1 / 60);
-    expect(systems.brakeTorqueLeft()).toBeGreaterThan(hot);
+    systems.setBrakes(0.4, 0.25);
+    systems.update(0, 60, 0, 1 / 60);
+    expect(systems.state.brakeLeft).toBeCloseTo(0.4, 12);
+    expect(systems.state.brakeRight).toBeCloseTo(0.25, 12);
   });
 
-  it('make no heat while the wheel is still inside the wing', () => {
+  it('clamp a command outside the range of the pedal', () => {
     const systems = createMe262Systems();
-    systems.commandGear(false);
-    for (let t = 0; t < GEAR_TRAVEL_TIME + 1; t += 1 / 60) {
-      systems.update(0, 100, 0, 1 / 60);
-    }
-    systems.setBrakes(1, 1);
-    for (let t = 0; t < 10; t += 1 / 60) {
-      systems.update(0, 100, 0, 1 / 60);
-    }
-    expect(systems.brakeHeatLeft()).toBe(0);
+    systems.setBrakes(3, -2);
+    systems.update(0, 20, 0, 1 / 60);
+    expect(systems.state.brakeLeft).toBe(1);
+    expect(systems.state.brakeRight).toBe(0);
   });
 });
 

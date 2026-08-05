@@ -25,9 +25,10 @@
  * takeoff flap. The run ends when the last wheel leaves the ground.
  *
  * The landing roll has no published target in the reference set. The test
- * measures it and records it for bead b33, with a wide sanity band, because the
- * weak brakes and the long landing run of this aircraft are documented behavior
- * and a model that stops in 300 m would be wrong.
+ * measures a MAXIMUM EFFORT stop: full brakes one second after the touch down.
+ * Bead b33 re-specified the target, because the first estimate read the long
+ * landing runs of the type as a maximum effort stop, and the two are different
+ * measurements. See the note above the record call.
  */
 
 import { afterAll, describe, expect, it } from 'vitest';
@@ -218,24 +219,45 @@ describe('the landing roll', () => {
     );
     expect(distance).toBeGreaterThan(0);
 
-    // No published target. The Me 262 was known for weak brakes and long landing
-    // runs, so the band is wide and it only catches a model that stops like a
-    // trainer or one that never stops at all.
-    // ESTIMATE, and it is marked as one. No landing roll appears in the
-    // reference set. A touch down at 48.6 m/s stops in V^2 / (2 a), which is
-    // 480 m at 0.25 g and 800 m at 0.15 g. Wendel calls the brakes of this
-    // aircraft weak and its landing run long, so the estimate sits at the low
-    // deceleration end with a band that covers both.
+    // BEAD b33 RE-SPECIFIED THIS TARGET. IT WAS 800 m WITH A BAND OF 400 m.
+    //
+    // No landing roll appears in the reference set, so both the old target and
+    // the new one are estimates. The old one took the long landing runs the
+    // type is known for and read them as a maximum effort stop. THE TWO ARE NOT
+    // THE SAME MEASUREMENT, in the same way that the touch-down speed of
+    // CONVENTIONS section 8 is not a stall speed.
+    //
+    // A roll of 800 m from 48.6 m/s is a mean deceleration of 0.15 g, which is
+    // 9.4 kN of braking force, which is 1975 N m at each main wheel. The pilot
+    // notes ask the SAME BRAKES to hold the aircraft against 17.6 kN of thrust
+    // during the run up, and that needs 3700 N m. One brake cannot give half of
+    // what it is documented to hold. The old target and the run up contradict
+    // each other, and the run up is the documented one.
+    //
+    // The band therefore comes from the brake the run up measures. See
+    // MAX_BRAKE_TORQUE of src/physics/gear.ts.
+    //
+    //   cold  2 * 4200 / 0.42 = 20.0 kN, which is 0.32 g, and the airframe drag
+    //         and the rolling resistance take it to 0.36 g. That is 334 m.
+    //   hot   the pack takes 3.6 MJ over the roll, reaches 541 K and gives 0.87
+    //         of its cold torque, which is 0.29 g. That is 415 m.
+    //   plus  about 49 m of free roll, while the nose wheel comes down.
+    //
+    // So a maximum effort roll runs 383 to 464 m. The band below is wider than
+    // that on both sides. Under 300 m the brake beats the tire, the wheels lock
+    // and the aircraft skids, which is what the model did before bead b33. Over
+    // 540 m the brake is too weak to hold the run up.
     record({
       name: 'landing roll from touch down',
       measured: distance,
-      target: 800,
-      tolerance: 400,
+      target: 420,
+      tolerance: 120,
       toleranceKind: 'absolute',
       unit: 'm',
       note:
-        'ESTIMATE, not published. Full brakes from 175 km/h on dry concrete. ' +
-        'The band covers 0.15 g to 0.25 g of mean deceleration.',
+        'ESTIMATE, not published, re-specified by bead b33. Full brakes from ' +
+        '175 km/h on dry concrete. The band comes from the brake that holds the ' +
+        'documented run up, cold at 0.36 g and faded at 0.29 g.',
     });
   });
 });

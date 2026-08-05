@@ -369,6 +369,25 @@ how you estimated it.
 | Load factor limit | +7 g and -3 g | estimated |
 | Armament | 4 x MK 108, 30 mm | firm |
 
+### Note on the Mach limit and the recovery
+
+Earlier text in this project said the documented recovery was to reduce thrust
+and use the trim wheel. That is NOT documented procedure, and the primary
+source says something close to the opposite.
+
+The Wright Field handbook F-SU-1111-ND is dated 10 January 1946. It states that
+the pilot should not use the stabilizer trim control when entering or leaving a
+dive. The reason it gives is that the control is easy to over-control.
+
+No Me-262 pilot document mentions Mach number at all. The placard is 950 km/h
+true airspeed, which is Mach 0.834 at 6000 m. The same placard says that no
+high-speed dives should be run.
+
+The thrust and stabilizer technique is supported by the aerodynamics, and by
+Mutke's single first-person account. It is not in the handbook. Write it that
+way. The aircraft was placarded away from the problem, not given a procedure
+for it.
+
 ### Note on the height, and a warning about this table
 
 This table first gave the height as 3.50 m and marked it firm. That was WRONG.

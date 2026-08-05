@@ -1,14 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import { Matrix3, Vector3 } from 'three';
 
-import { G0, toRad } from '@/math/units';
+import { G0, kmhToMs, toRad } from '@/math/units';
 import {
+  BRAKE_FADE_FULL_TEMPERATURE,
+  BRAKE_FADE_START_TEMPERATURE,
   MAX_BRAKE_TORQUE,
   ME262_NOSE_LOAD_FRACTION,
   ME262_STATIC_CG_HEIGHT,
   NOSE_STEER_LIMIT,
   TIRE_PEAK_SLIP_ANGLE,
   TIRE_PEAK_SLIP_RATIO,
+  brakeFade,
   createMe262Gear,
   me262GearLegs,
   tireLateralMu,
@@ -424,20 +427,37 @@ describe('tire friction', () => {
     expect(tireLateralMu(-TIRE_PEAK_SLIP_ANGLE)).toBeCloseTo(-peak, 12);
   });
 
-  it('skids on a full brake and takes longer to stop than a firm one', () => {
+  it('skids on a full brake at a light wheel load and takes longer to stop', () => {
     // The tire curve exists to make this true. A firm application holds the tire
     // near the peak of its curve. A full application asks for more than the tire
     // can give, the wheel stops turning, and the tire slides at the FALLING end
     // of the curve. The aircraft then needs more runway, not less.
+    //
+    // THE RUN CARRIES 40 PERCENT OF THE WEIGHT ON THE WHEELS. Bead b33 took
+    // MAX_BRAKE_TORQUE down to the value the run up of the pilot notes measures,
+    // so the brake is now WEAKER than the tire at the full weight and a full
+    // pedal cannot lock a wheel there. It can lock one early in a landing roll,
+    // where the wing still carries most of the weight and the tire has little
+    // load to grip with. That is the condition below.
+    //
+    // THE RUN STARTS AT 40 m/s SO THAT THE PACK STAYS COLD. This test measures
+    // the TIRE. A stop from 60 m/s with no wing lift at all puts 5.7 MJ into
+    // each pack, which is past BRAKE_FADE_FULL of src/physics/gear.ts, and a
+    // pack that has lost half its torque asks the tire for less than a locked
+    // tire gives. The brake would then win the comparison for a reason that has
+    // nothing to do with the tire curve. The test below this one measures that
+    // second effect on its own.
+    // The share of the weight the WHEELS carry. The wing carries the rest.
+    const wheelShare = 0.4;
     function stop(command: number): { distance: number; worstSlip: number } {
       const gear = createMe262Gear();
       const state = createState();
       const wrench = createWrench();
-      const gravityWorld = new Vector3(0, 0, WEIGHT);
+      const gravityWorld = new Vector3(0, 0, wheelShare * WEIGHT);
       const gravityBody = new Vector3();
       const acceleration = new Vector3();
       state.position.set(0, 0, -ME262_STATIC_CG_HEIGHT);
-      state.velocity.set(60, 0, 0);
+      state.velocity.set(40, 0, 0);
       let start = 0;
       let worstSlip = 0;
       for (let i = 0; i < 240 * 60 && state.velocity.x > 0.5; i++) {
@@ -461,14 +481,11 @@ describe('tire friction', () => {
       }
       return { distance: state.position.x - start, worstSlip };
     }
-    // THE FIRM PEDAL FOLLOWS THE BRAKE CONSTANT. MAX_BRAKE_TORQUE is sized so
-    // that a full pedal reaches the peak of the tire curve at the static load
-    // and locks the wheel just past it, so the pedal that holds the peak is a
-    // property of that constant and not a number a test may guess. Below is the
-    // pedal that would exactly reach the peak, and the firm application sits one
-    // percent under it. A hard coded fraction went stale the last time the
-    // constant moved.
-    const mainStaticLoad = 0.5 * (1 - ME262_NOSE_LOAD_FRACTION) * WEIGHT;
+    // THE FIRM PEDAL FOLLOWS THE BRAKE CONSTANT AND THE WHEEL LOAD. Below is
+    // the pedal that would put the tire exactly at the peak of its curve at this
+    // load, and the firm application sits one percent under it. A hard coded
+    // fraction went stale the last time the constant moved.
+    const mainStaticLoad = 0.5 * (1 - ME262_NOSE_LOAD_FRACTION) * wheelShare * WEIGHT;
     const lockPedal =
       (tireLongitudinalMu(TIRE_PEAK_SLIP_RATIO) * mainStaticLoad * LEGS[MAIN_LEFT].wheelRadius) /
       MAX_BRAKE_TORQUE;
@@ -519,8 +536,11 @@ describe('ground steering', () => {
     expect(leftBrake.wrench.moment.z).toBeLessThan(-5000);
     expect(rightBrake.wrench.moment.z).toBeGreaterThan(5000);
     expect(leftBrake.wrench.moment.z).toBeCloseTo(-rightBrake.wrench.moment.z, 6);
-    // Only the braked wheel slips. The free wheel rolls.
-    expect(leftBrake.gear.legs[MAIN_LEFT].slipRatio).toBeLessThan(-0.5);
+    // Only the braked wheel slips. The free wheel rolls. The slip is small,
+    // because MAX_BRAKE_TORQUE now sits below what the tire can pass at the
+    // static load, so a full pedal holds the wheel turning near the front of
+    // the curve instead of locking it. See the note on that constant.
+    expect(leftBrake.gear.legs[MAIN_LEFT].slipRatio).toBeLessThan(-0.01);
     expect(leftBrake.gear.legs[MAIN_RIGHT].slipRatio).toBeCloseTo(0, 2);
     // The nose wheel has no brake, so it never slips under a brake command.
     expect(leftBrake.gear.legs[NOSE].slipRatio).toBeCloseTo(0, 2);
@@ -601,10 +621,153 @@ describe('the aircraft standing on the ground', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// The brakes. Bead b63.
+//
+// THIS FILE HOLDS THE ONLY BRAKE FADE MODEL OF THE PROJECT.
+// src/aircraft/me262/systems.ts held a second one and multiplied the pilot
+// command by its own fade before it handed the command to `update`, which then
+// multiplied the torque by this one. Both applied, so the brakes faded about
+// twice as fast as either model meant. systems.ts now passes the raw command.
+// ---------------------------------------------------------------------------
+
+/** What one landing roll on the brakes leaves behind. */
+interface RollResult {
+  /** Distance from the first brake application to the stop, m. */
+  distance: number;
+  /** Highest pack temperature of one main brake, K. */
+  peakTemperature: number;
+  /** Torque the pack still gives at that temperature, as a fraction of cold. */
+  fadeAtPeak: number;
+  /** Lowest slip ratio the left main reached. -1 is a locked wheel. */
+  worstSlip: number;
+}
+
+/**
+ * Rolls the aircraft out from a touch down at 175 km/h and brakes it to a stop.
+ *
+ * There is no aerodynamic force here, so the wheels carry the whole weight from
+ * the first meter and every joule of the kinetic energy goes into the tires and
+ * the brakes. That is the HARDEST case the brakes can meet: a real roll leaves
+ * part of the weight on the wing and part of the energy in the airframe drag.
+ */
+function landingRoll(command: number, wheelShare = 1): RollResult {
+  const gear = createMe262Gear();
+  const state = createState();
+  const wrench = createWrench();
+  const gravityWorld = new Vector3(0, 0, wheelShare * WEIGHT);
+  const gravityBody = new Vector3();
+  const acceleration = new Vector3();
+  state.position.set(0, 0, -ME262_STATIC_CG_HEIGHT);
+  state.velocity.set(kmhToMs(175), 0, 0);
+  let start = 0;
+  let peakTemperature = 0;
+  let worstSlip = 0;
+  for (let i = 0; i < 240 * 120 && state.velocity.x > 0.5; i++) {
+    // One second of free roll first, so the wheels are turning when the pedal
+    // goes down. A wheel that never turned locks whatever the pilot does.
+    const braking = i >= 240;
+    if (i === 240) {
+      start = state.position.x;
+    }
+    clearWrench(wrench);
+    gear.update(state, 1, 0, braking ? command : 0, braking ? command : 0, DT, wrench);
+    peakTemperature = Math.max(peakTemperature, gear.legs[MAIN_LEFT].brakeTemp);
+    if (braking && state.velocity.x > 5) {
+      worstSlip = Math.min(worstSlip, gear.legs[MAIN_LEFT].slipRatio);
+    }
+    worldToBody(state.orientation, gravityWorld, gravityBody);
+    wrench.force.add(gravityBody);
+    acceleration.copy(wrench.force).applyQuaternion(state.orientation).multiplyScalar(1 / MASS);
+    state.velocity.addScaledVector(acceleration, DT);
+    state.position.x += state.velocity.x * DT;
+  }
+  return {
+    distance: state.position.x - start,
+    peakTemperature,
+    fadeAtPeak: brakeFade(peakTemperature),
+    worstSlip,
+  };
+}
+
+/** The pedal that puts the tire exactly at the peak of its curve at rest. */
+function lockPedal(wheelShare = 1): number {
+  const mainStaticLoad = 0.5 * (1 - ME262_NOSE_LOAD_FRACTION) * wheelShare * WEIGHT;
+  return (
+    (tireLongitudinalMu(TIRE_PEAK_SLIP_RATIO) * mainStaticLoad * LEGS[MAIN_LEFT].wheelRadius) /
+    MAX_BRAKE_TORQUE
+  );
+}
+
 describe('brake heat and fade', () => {
+  it('holds the cold torque below the lining temperature and half of it above', () => {
+    // One curve, one place. The lining of 1944 is asbestos and resin. It holds
+    // its friction to about 200 C, breaks down as the binder chars, and keeps
+    // about half of the cold value when it is fully gone.
+    expect(brakeFade(288.15)).toBe(1);
+    expect(brakeFade(BRAKE_FADE_START_TEMPERATURE)).toBe(1);
+    expect(brakeFade(BRAKE_FADE_FULL_TEMPERATURE)).toBeCloseTo(0.5, 12);
+    expect(brakeFade(2000)).toBeCloseTo(0.5, 12);
+    // Halfway between the two anchors the curve sits halfway through the fade.
+    const middle = 0.5 * (BRAKE_FADE_START_TEMPERATURE + BRAKE_FADE_FULL_TEMPERATURE);
+    expect(brakeFade(middle)).toBeCloseTo(0.75, 12);
+    // It never rises with temperature.
+    let previous = 1;
+    for (let t = 288.15; t < 1200; t += 5) {
+      const value = brakeFade(t);
+      expect(value).toBeLessThanOrEqual(previous + 1e-12);
+      previous = value;
+    }
+  });
+
+  it('fades one fifth of the brake over a full landing roll from touch down', () => {
+    // 6396 kg at 48.6 m/s carries 7.6 MJ, so each of the two packs takes up to
+    // 3.8 MJ. At BRAKE_HEAT_CAPACITY that is a rise near 270 K, which lands the
+    // pack inside the fade band. THE ME 262 WAS KNOWN FOR WEAK BRAKES AND LONG
+    // LANDING RUNS, so a model whose pack never reaches the band at all would
+    // carry a fade that never acts.
+    const firm = landingRoll(0.95 * lockPedal());
+    expect(firm.peakTemperature).toBeGreaterThan(BRAKE_FADE_START_TEMPERATURE);
+    expect(firm.peakTemperature).toBeLessThan(BRAKE_FADE_FULL_TEMPERATURE);
+    // The pack keeps between 70 and 90 percent of its cold torque at the stop.
+    expect(firm.fadeAtPeak).toBeGreaterThan(0.7);
+    expect(firm.fadeAtPeak).toBeLessThan(0.9);
+    // The wheel still turns, which is what makes the heat in the pack.
+    expect(firm.worstSlip).toBeGreaterThan(-0.5);
+  });
+
+  it('puts the energy of a locked wheel into the tire and leaves the pack cold', () => {
+    // A locked pack no longer slides against the disc, so it takes no heat at
+    // all. The tire takes it instead. That is why a pilot who locks a wheel
+    // ruins a tire and keeps his brakes.
+    //
+    // THE ROLL CARRIES 40 PERCENT OF THE WEIGHT ON THE WHEELS, because that is
+    // where this brake can still lock a wheel. See the note on MAX_BRAKE_TORQUE
+    // and the tire test above.
+    const locked = landingRoll(1, 0.4);
+    expect(locked.worstSlip).toBeLessThan(-0.9);
+    // The pack takes the energy of the spin down and nothing after it, which is
+    // 35 K here against the 253 K of a roll where the wheel keeps turning.
+    expect(locked.peakTemperature - 288.15).toBeLessThan(50);
+    expect(locked.fadeAtPeak).toBe(1);
+  });
+
+  it('loses to a locked wheel once the pack has faded to half its torque', () => {
+    // A pack at BRAKE_FADE_FULL asks the tire for 0.5 * 0.8 = 0.40, and a locked
+    // tire slides at 0.76 * 0.8 = 0.61. The brake is then the weaker of the two.
+    // This is the reason the tire test above starts at 40 m/s and not at 60.
+    const cold = tireLongitudinalMu(TIRE_PEAK_SLIP_RATIO) * brakeFade(288.15);
+    const hot = tireLongitudinalMu(TIRE_PEAK_SLIP_RATIO) * brakeFade(BRAKE_FADE_FULL_TEMPERATURE);
+    const locked = Math.abs(tireLongitudinalMu(-1));
+    expect(cold).toBeGreaterThan(locked);
+    expect(hot).toBeLessThan(locked);
+  });
+
   it('heats the pack and loses torque as it heats', () => {
     // Hold the aircraft at 60 m/s and drag the brakes. The wheel keeps turning,
-    // so the pack slides against the disc and takes the energy.
+    // so the pack slides against the disc and takes the energy. The pedal is
+    // full, because MAX_BRAKE_TORQUE now sits below the tire at this load and a
+    // full pedal no longer locks the wheel.
     const gear = createMe262Gear();
     const state = createState();
     const wrench = createWrench();
@@ -613,7 +776,7 @@ describe('brake heat and fade', () => {
     let coldForce = 0;
     for (let i = 0; i < 240 * 25; i++) {
       clearWrench(wrench);
-      gear.update(state, 1, 0, 0.5, 0.5, DT, wrench);
+      gear.update(state, 1, 0, 1, 1, DT, wrench);
       if (i === 240) {
         coldForce = -wrench.force.x;
       }

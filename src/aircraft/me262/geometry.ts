@@ -266,6 +266,51 @@ const FLAP_CLMAX_DELTA = 1.2 / FLAP_LANDING_ANGLE; // per rad of deflection
 const FLAP_ALPHA_DELTA = (1.2 * DEG) / FLAP_LANDING_ANGLE; // rad per rad
 
 /**
+ * Chord of the flap, as a fraction of the local wing chord.
+ *
+ * FLAP_TAU and FLAP_CLMAX_DELTA above both come from the NACA 23012 with a 25.7
+ * percent slotted flap of NACA TN 664. The drag increment below must work from
+ * the same chord ratio, or the lift and the drag would describe two different
+ * flaps. Source: NACA TN 664. Confidence: derived from firm section data.
+ */
+const FLAP_CHORD_RATIO = 0.257;
+
+/**
+ * Exponent of the flap chord ratio in the profile drag law.
+ *
+ * Hoerner fits the drag of a deflected flap as K (cf / c)^1.38 sin^2(deflection)
+ * over a range of flap chords. Source: Hoerner, "Fluid Dynamic Drag", chapter 5.
+ * Confidence: firm for the form of the fit.
+ */
+const FLAP_DRAG_CHORD_EXPONENT = 1.38;
+
+/**
+ * The constant K of that law, for a SLOTTED flap.
+ *
+ * Hoerner fits K = 1.7 to plain and split flaps. A slotted flap of the same
+ * chord pays less, because the slot carries fresh air over the upper surface of
+ * the flap and holds the flow on. The model takes half the split flap value,
+ * K = 0.85, and three separate checks agree at the 40 degree setting of the
+ * measured section:
+ *
+ *   this law     0.85 * 0.257^1.38 * sin^2(40 deg) = 0.054
+ *   Raymer       0.0074 * (cf / c) * (deflection in degrees - 10) = 0.057
+ *   NACA TN 664  the polar of the flapped section sits about 0.05 above the
+ *                polar of the clean section at 40 degrees
+ *
+ * The law then gives 0.0152 at the 20 degree take off setting and 0.0765 at the
+ * 50 degree landing setting, on the part of the section the flap covers.
+ *
+ * Source: Hoerner, "Fluid Dynamic Drag", chapter 5, Raymer, "Aircraft Design: A
+ * Conceptual Approach", flap drag increment, and NACA TN 664.
+ * Confidence: estimate.
+ */
+const FLAP_DRAG_CONSTANT = 0.85;
+
+/** The value src/physics/aero/surface.ts asks for, before the span coverage. */
+const FLAP_CD_DELTA = FLAP_DRAG_CONSTANT * FLAP_CHORD_RATIO ** FLAP_DRAG_CHORD_EXPONENT;
+
+/**
  * Aileron effectiveness. The hinge sits at 72 percent chord, so the control
  * chord ratio is 0.28 and the theoretical tau is 0.52. The gap and the boundary
  * layer take about 15 percent of it. Source: Perkins and Hage, "Airplane
@@ -575,6 +620,10 @@ function wingStrips(side: number): SurfaceDef[] {
       // zero lift shift does. Only the covered part of the strip carries a slot.
       flapClMaxDelta: FLAP_CLMAX_DELTA * flapCover,
       flapAlphaDelta: FLAP_ALPHA_DELTA * flapCover,
+      // The drag of the flap scales the same way, and for the same reason. The
+      // nacelle cuts the flap to 29 percent of the span, so the aircraft pays
+      // far less flap drag than a single engine fighter of the same size pays.
+      flapCdDelta: FLAP_CD_DELTA * flapCover,
       hasSlat: center > SLAT_SPAN[0],
       slatAlphaDelta: SLAT_ALPHA_DELTA,
       slatDeployAlpha: SLAT_DEPLOY_ALPHA,
@@ -619,6 +668,7 @@ function tailStrips(side: number): SurfaceDef[] {
       flapEffectiveness: 0,
       flapClMaxDelta: 0,
       flapAlphaDelta: 0,
+      flapCdDelta: 0,
       hasSlat: false,
       slatAlphaDelta: 0,
       slatDeployAlpha: 0,
@@ -668,6 +718,7 @@ function finStrips(): SurfaceDef[] {
       flapEffectiveness: 0,
       flapClMaxDelta: 0,
       flapAlphaDelta: 0,
+      flapCdDelta: 0,
       hasSlat: false,
       slatAlphaDelta: 0,
       slatDeployAlpha: 0,
@@ -704,6 +755,49 @@ export function me262Surfaces(): SurfaceDef[] {
  * moves the aerodynamic center of the aircraft about 9 percent of the mean
  * aerodynamic chord forward. That is the range a fuselage of this fineness
  * really produces.
+ *
+ *
+ * THE PARASITE DRAG OF THE WHOLE AIRCRAFT SITS IN THE TWO AXIAL COEFFICIENTS
+ * BELOW. READ THIS BEFORE YOU CHANGE EITHER ONE.
+ *
+ * The model builds the drag of the aircraft from its parts. Each lifting strip
+ * pays the published profile drag of its own section and each body pays its own
+ * axial coefficient. Bead b33 measured what that sum gives at the maximum level
+ * speed at sea level, as an equivalent flat plate area f = CD0 * 21.7 m2:
+ *
+ *   wing 0.113, tailplane 0.021, fin 0.015, fuselage 0.124, nacelles 0.068
+ *   total 0.341 m2, which is CD0 = 0.0157
+ *
+ * A REAL AIRFRAME PAYS MORE THAN THE SUM OF ITS SMOOTH PARTS. Two terms are
+ * missing from that sum. Interference drag appears where the wing meets the
+ * fuselage, where the nacelle meets the wing, and where the tail meets the
+ * fuselage. Excrescence drag comes from the skin joints, the rivets, the four
+ * gun troughs, the gear doors, the aerial, the control surface gaps and the air
+ * that leaks through the airframe. The standard buildup adds 5 to 10 percent for
+ * the first and 10 to 30 percent for the second, and a 1944 production airframe
+ * sits at the top of the second band.
+ *
+ * The independent buildup agrees with that correction. The wetted area of this
+ * aircraft is near 107 m2. A turbulent flat plate at the flight Reynolds number
+ * of 3e7 gives a friction coefficient of 0.0026, and the usual form factors give
+ * 0.354 m2 of flat plate area. The two allowances above take it to 0.44 m2,
+ * which is CD0 = 0.0203.
+ *
+ * The measured performance asks for the same number. At 827 km/h at sea level
+ * the engine model makes 14.2 kN, so the aircraft must pay 0.440 m2 of flat
+ * plate area to sit at that speed. The service ceiling gives a third check: the
+ * height where the best climb falls to 0.5 m/s reaches the published 11450 m at
+ * a minimum drag that needs CD0 near 0.020. Three separate measurements meet
+ * inside 3 percent of each other.
+ *
+ * WHY THE TWO BODIES CARRY THE WHOLE ALLOWANCE. The allowance belongs to the
+ * whole airframe, and most of it really belongs to the wing and the tail. The
+ * drag of a strip comes from the section tables of Abbott and von Doenhoff,
+ * which are firm published data of a smooth model. This project does not bend
+ * published section data to hold an aircraft level correction. The two body
+ * coefficients are estimates at the aircraft level, so they are the honest place
+ * to book it. Read them as the parasite drag of the body PLUS the interference
+ * and the excrescence drag of the whole aircraft.
  */
 export function me262Bodies(): BodyDef[] {
   const shape = fuselageShape();
@@ -719,10 +813,16 @@ export function me262Bodies(): BodyDef[] {
       volume: shape.volume,
       sideArea: shape.sideArea,
       frontalArea: shape.frontalArea,
-      // Parasite drag of a streamlined fuselage of fineness 8, on the frontal
-      // area, with the canopy and the wing root fairing inside it.
-      // Source: Hoerner, "Fluid Dynamic Drag", chapter 6. Confidence: estimate.
-      axialDragCoefficient: 0.09,
+      // Parasite drag on the frontal area. A smooth streamlined body of
+      // fineness 8 with the canopy and the wing root fairing gives 0.09. The
+      // value carries the interference and the excrescence drag of the whole
+      // airframe on top of that, which is why it is 0.13 and not 0.09. See the
+      // note on the parasite drag in the comment of this function.
+      // Bead b33 raised it from 0.09 to 0.13. The measurement was the maximum
+      // level speed at sea level, which ran 12.4 percent fast at 0.09.
+      // Source: Hoerner, "Fluid Dynamic Drag", chapter 6, for the smooth body,
+      // and the buildup of bead b33 for the allowance. Confidence: estimate.
+      axialDragCoefficient: 0.13,
       crossFlowDragCoefficient: 1.2,
       munkFactor: 0.47,
     },
@@ -744,9 +844,14 @@ export function me262Bodies(): BodyDef[] {
       sideArea: NACELLE_LENGTH * 2 * 0.415,
       frontalArea: nacelleFrontalArea,
       // The intake momentum drag belongs to the engine model, which already
-      // reports NET thrust. This coefficient carries the external skin friction
-      // and the boat tail drag only. Confidence: estimate.
-      axialDragCoefficient: 0.06,
+      // reports NET thrust. This coefficient carries the external skin friction,
+      // the drag of the intake lip and the boat tail drag. It also carries its
+      // share of the airframe interference and excrescence allowance, which is
+      // why it is 0.10 and not the 0.06 of a clean duct. See the note on the
+      // parasite drag in the comment of this function. Bead b33 raised it from
+      // 0.06 to 0.10 against the same measurement that moved the fuselage.
+      // Confidence: estimate.
+      axialDragCoefficient: 0.1,
       crossFlowDragCoefficient: 1.2,
       // Reduced from the 0.47 of a closed body, for the same through flow reason
       // as the volume. Confidence: estimate.

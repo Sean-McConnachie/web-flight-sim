@@ -94,6 +94,31 @@
  * carry a flap increment into a fully separated section, which has no slot flow
  * left to keep.
  *
+ * THE FLAP ALSO MAKES DRAG, and a fourth field carries it.
+ *
+ *   flapCdDelta      Profile drag the deployed flap adds to its own section.
+ *
+ * The three lift fields cannot make that drag on their own. The flap works by a
+ * SHIFT of the table angle, and a shift along a drag polar can move cd DOWN, so
+ * a model with the lift fields alone lets the pilot lower a large drag device
+ * and lose drag. The model therefore adds a profile drag increment on top of the
+ * table, in the same way that the slat below adds one.
+ *
+ * The increment follows the deflection as
+ *
+ *   delta cd = flapCdDelta * sin^2(deflection)
+ *
+ * The sin squared shape is the one Hoerner fits to measured flaps. It is zero at
+ * zero deflection, it grows fastest in the middle of the travel, and it treats a
+ * flap that goes up in the same way as a flap that goes down, which is what a
+ * drag term must do. THE DEFLECTION HERE IS THE RAW COMMAND, not the Mach scaled
+ * one that the lift terms take. A flap that lost its lift power to a shock still
+ * hangs in the flow, and it then drags more, not less.
+ *
+ * The def carries the whole of the geometry, because the flap chord ratio and
+ * the covered span belong to the aircraft. This file holds only the shape of the
+ * law. Source: Hoerner, "Fluid Dynamic Drag", chapter 5.
+ *
  * What the model does not do. StripGeometry.clMax still holds the CLEAN peak of
  * the section, so the Mach peak loss below works from the clean value. That
  * costs nothing here, because no aircraft flies with the flap down near the
@@ -236,6 +261,21 @@ export interface SurfaceDef {
    * not already give. See the FLAPS note in the module comment.
    */
   flapAlphaDelta: number;
+  /**
+   * Profile drag the deployed flap adds to the section, as the coefficient of
+   *
+   *   delta cd = flapCdDelta * sin^2(deflection)
+   *
+   * The value is therefore the increment at the deflection where the sine is
+   * one, which is a flap turned broadside to the flow. It is never negative,
+   * because a deployed flap can only add drag. See the FLAPS note in the module
+   * comment.
+   *
+   * Scale the value by the fraction of the strip that the flap covers, exactly
+   * as flapEffectiveness is scaled. The chord of the flap and its span both
+   * belong to the aircraft, so both live in the value the caller builds.
+   */
+  flapCdDelta: number;
   hasSlat: boolean;
   /** rad, how much the open slat raises the stall angle. */
   slatAlphaDelta: number;
@@ -592,12 +632,19 @@ export function evaluateSurface(
   // correction takes their power away as the shock reaches the hinge line.
   let alphaZeroLift = 0;
   let flapDeflection = 0;
+  let flapDrag = 0;
   if (def.controlIndex >= 0 && def.controlIndex < controls.length) {
     alphaZeroLift += def.controlEffectiveness * controls[def.controlIndex] * mach.controlScale;
   }
   if (def.flapIndex >= 0 && def.flapIndex < controls.length) {
-    flapDeflection = controls[def.flapIndex] * mach.controlScale;
+    const commanded = controls[def.flapIndex];
+    flapDeflection = commanded * mach.controlScale;
     alphaZeroLift += def.flapEffectiveness * flapDeflection;
+    // The profile drag of the flap. It reads the RAW deflection and not the Mach
+    // scaled one, because a flap that lost its lift power to a shock is still
+    // out in the flow. See the FLAPS note in the module comment.
+    const sinDeflection = Math.sin(commanded);
+    flapDrag = def.flapCdDelta * sinDeflection * sinDeflection;
   }
 
   // The induced angle arrives in free stream terms and the strip works in the
@@ -661,7 +708,7 @@ export function evaluateSurface(
   const steadyFactor = separationFactor(steadyF);
   cl *= steadyFactor > 1e-9 ? separationFactor(laggedF) / steadyFactor : 1;
 
-  const cd = coefficients.cd + mach.cdAdd + SLAT_OPEN_DRAG * slatOpening;
+  const cd = coefficients.cd + mach.cdAdd + SLAT_OPEN_DRAG * slatOpening + flapDrag;
 
   const cosFlow = Math.cos(alphaFlow);
   const sinFlow = Math.sin(alphaFlow);
