@@ -302,6 +302,31 @@ the opaque list when the camera uses a reversed depth buffer. This also flips
 `renderOrder`. A `renderOrder` of -1 therefore draws LAST, not first. Read
 `renderer.reversedDepthBuffer` and flip the sign yourself.
 
+**Three.js reversed depth buffer and the TRANSPARENT list.** The same `reverse()`
+runs on `transparent` and on `transparentDoublePass`, not on the opaque list
+alone. Three.js sorts the transparent list from far to near, which is the order
+that alpha blending needs, and then it turns that order around. Two transparent
+objects therefore blend in the WRONG order with this buffer. Give every
+transparent object an explicit `renderOrder` and change its sign with
+`renderer.reversedDepthBuffer`, the same way the sky does. Additive blending
+does not care, because addition does not depend on the order.
+
+**Three.js `SpriteNodeMaterial` and the `Sprite` type.** `Sprite` names its
+material `SpriteMaterial` in the TypeScript definitions, and `SpriteNodeMaterial`
+reports `isSpriteMaterial` as a boolean where the older class reports the
+literal `true`. The two types are not assignable, although the renderer takes
+either one. Cast through `unknown` and say why.
+
+**Three.js timestamp queries.** `trackTimestamp` is a constructor parameter of
+the backend, so it looks like a choice you must make before the renderer starts.
+You can still turn it on later. Three.js asks the adapter for every feature it
+supports, so the device already carries `timestamp-query`, and the query pool
+builds itself on the first pass after
+`renderer.backend.trackTimestamp = true`. Then `resolveTimestampsAsync('render')`
+fills `renderer.info.render.timestamp` with the real time on the card, in
+milliseconds. This is the only honest way to measure a render cost on a machine
+where the compositor holds `requestAnimationFrame` at 1 Hz.
+
 **Chrome on this machine, hybrid graphics.** `/dev/dri/card0` is the NVIDIA and
 `/dev/dri/renderD128` is the AMD. Chrome allocates on one device and imports on
 the other, then reports `VK_ERROR_OUT_OF_DEVICE_MEMORY`, which is not a memory

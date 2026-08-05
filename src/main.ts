@@ -54,6 +54,7 @@ import type { Me262Pivots } from '@/render/models/me262';
 import type { Me262Cockpit } from '@/render/models/cockpit';
 import { ME262_COCKPIT_TRAVEL, createMe262Cockpit } from '@/render/models/cockpit';
 import { ME262_POSE, createMe262Model } from '@/render/models/me262';
+import { createParticles } from '@/render/particles';
 import { createPostChain } from '@/render/postfx';
 import { createRenderer, isWebGPUAvailable } from '@/render/renderer';
 import { createWeaponEffects } from '@/render/weapons';
@@ -323,6 +324,13 @@ async function main(): Promise<void> {
   model.root.add(effects.muzzleRoot);
   const recoilTarget: RecoilTarget = aircraft;
 
+  // --- The particles ------------------------------------------------------
+  // The exhaust, the contrails, the wheel dust and an engine fire. Every one
+  // of them stands in the WORLD, so the root hangs off the scene and not off
+  // the model. A trail that hung off the model would follow the aircraft.
+  const particles = createParticles(renderer);
+  scene.add(particles.root);
+
   // --- The input ---------------------------------------------------------
   // The differential brake only works while the wheels touch the ground, so
   // the input system asks the aircraft.
@@ -573,6 +581,10 @@ async function main(): Promise<void> {
 
       // The tracers, the bursts and the four muzzle flashes.
       effects.update(armament, frameDt);
+
+      // The compute pass that moves every particle. It runs before the draw,
+      // so the frame draws the positions of this frame.
+      particles.update(aircraft, armament, renderPosition, renderOrientation, frameDt);
       hud.visible = rig.mode !== 'cockpit';
       hud.update(telemetry, readout);
 
@@ -595,6 +607,8 @@ async function main(): Promise<void> {
     hud,
     loop,
     armament,
+    particles,
+    post,
   };
 
   respawn();

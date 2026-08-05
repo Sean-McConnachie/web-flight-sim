@@ -12,6 +12,8 @@ import type { Object3D, Scene, Vector3, WebGPURenderer } from 'three/webgpu';
 import { Group } from 'three/webgpu';
 
 import { config } from '@/core/config';
+import type { CloudLayer } from '@/render/clouds';
+import { createClouds } from '@/render/clouds';
 import { createGround } from '@/render/ground';
 import type { ShadowRig } from '@/render/shadows';
 import { createShadowRig } from '@/render/shadows';
@@ -29,6 +31,9 @@ export interface World {
 
   /** The sky, the sun light, the environment map, and the fog. */
   sky: SkyBundle;
+
+  /** The cloud deck. It reads the same sun and the same haze the sky uses. */
+  clouds: CloudLayer;
 
   /** The cascade shadow rig of the sun. Set `enabled` to compare the cost. */
   shadows: ShadowRig;
@@ -54,12 +59,17 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
   const ground = createGround();
   const runway = createRunway();
 
+  // The deck must come after the sky, because it takes the clouds of the sky
+  // dome away. Read section 5 of src/render/clouds.ts.
+  const clouds = createClouds(renderer, scene, sky.sky);
+
   root.add(sky.sky);
   root.add(sky.sun);
   // The light aims at its target, so the target needs a place in the graph.
   root.add(sky.sun.target);
   root.add(ground.mesh);
   root.add(runway.group);
+  root.add(clouds.mesh);
 
   // Buildings and trees join here. Add their groups to `root` and call their
   // update from `update` below. Keep the sky first, so it stays the background.
@@ -89,6 +99,7 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
   return {
     root,
     sky,
+    clouds,
     shadows,
     targets,
 
@@ -113,11 +124,15 @@ export function createWorld(renderer: WebGPURenderer, scene: Scene): World {
       // The cascade rig places the light of every cascade from here.
       shadows.update(cameraPosition, sky.sunDirection);
 
+      // The deck rides with the camera and it reads the sun of this frame.
+      clouds.update(dt, cameraPosition, sky.sun, sky.sunDirection);
+
       // Rebuilds the environment map only after `setSunAngles` moved the sun.
       sky.update(renderer, scene);
     },
 
     dispose(): void {
+      clouds.dispose();
       shadows.dispose();
       targetField.dispose();
       scatter.dispose();

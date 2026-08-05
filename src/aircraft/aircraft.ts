@@ -157,6 +157,8 @@ import {
   ENGINE_POSITION_RIGHT,
   createMe262Assembly,
 } from '@/aircraft/me262/geometry';
+import type { Structure, StructureInput } from '@/aircraft/me262/limits';
+import { createStructure } from '@/aircraft/me262/limits';
 import type { MassState } from '@/aircraft/me262/mass';
 import { FUEL_CAPACITY, me262Mass } from '@/aircraft/me262/mass';
 import type { FlapSetting, Me262Systems } from '@/aircraft/me262/systems';
@@ -311,6 +313,12 @@ export interface AircraftEvents {
    * last state that was, and only a spawn clears it.
    */
   diverged: { message: string; time: number };
+  /**
+   * The airframe, an engine or the fuel system passed a limit and something
+   * broke. src/aircraft/me262/limits.ts writes the message and every message
+   * says what the pilot must do next.
+   */
+  failure: { message: string; time: number };
 }
 
 export interface Aircraft {
@@ -328,6 +336,20 @@ export interface Aircraft {
 
   /** The aerodynamic assembly. sampleForDebug of it feeds the force arrows. */
   readonly assembly: AeroAssembly;
+  /**
+   * The structural limits and the damage. src/aircraft/me262/limits.ts owns
+   * every bound and every failure. The display and the tests read the state.
+   */
+  readonly structure: Structure;
+  /**
+   * A force and a moment that another module puts on the airframe, body axes,
+   * about the center of gravity. `source` adds it to the sum of every step and
+   * clears nothing, so the writer owns the value and its lifetime.
+   *
+   * BEAD b67. src/weapons/armament.ts writes the recoil of the four MK 108
+   * into it. Firing all four decelerates the aircraft by 0.126 g.
+   */
+  readonly externalWrench: Wrench;
   /** The air the aircraft flies in now. The debug overlay reads it. */
   readonly atmosphere: AtmosphereSample;
   /** Equivalent airspeed, m/s. The overlay and the systems limits read it. */
@@ -394,6 +416,7 @@ export function createAircraft(): Aircraft {
   const gear = createMe262Gear();
   const contacts = createMe262AirframeContact();
   const systems = createMe262Systems();
+  const structure = createStructure();
   const engines: readonly Engine[] = [
     createJumo004(ENGINE_POSITION_LEFT),
     createJumo004(ENGINE_POSITION_RIGHT),
@@ -458,6 +481,8 @@ export function createAircraft(): Aircraft {
   const wind = new Vector3(0, 0, 0);
   const groundWrench: Wrench = createWrench();
   const stepWrench: Wrench = createWrench();
+  /** Bead b67. The recoil of the guns, and anything else from outside. */
+  const externalWrench: Wrench = createWrench();
   /** The state at the top of the step. The guard of section 4 falls back to it. */
   const lastGoodState: RigidBodyState = createState();
   const thrustForce = new Vector3();
@@ -478,6 +503,20 @@ export function createAircraft(): Aircraft {
     airspeed: 0,
     density: 0,
     fuelAvailable: true,
+  };
+  /** What src/aircraft/me262/limits.ts reads. fixedUpdate fills it in place. */
+  const structureInput: StructureInput = {
+    loadFactor: 1,
+    rollRate: 0,
+    mass: 0,
+    trueAirspeed: 0,
+    altitude: 0,
+    fuelMass: 0,
+    onGround: false,
+    engineFire: [false, false],
+    engineLightOff: [false, false],
+    tireBurst: [false, false, false],
+    brakeTemperature: [0, 0, 0],
   };
 
   let simTime = 0;
@@ -513,6 +552,11 @@ export function createAircraft(): Aircraft {
     // the first stage advances the separation lag. See section 2.
     const stageTotals = assembly.evaluate(stage, wind, controls, firstStage ? stepDt : 0, out);
 
+    // 2a. A wing panel that left the aircraft makes no force. limits.ts takes
+    // the strips of that panel back off the sum, and it does nothing at all
+    // while the wing is whole.
+    structure.applyWingFailure(assembly.surfaces, out);
+
     // 3. The drag of the landing gear. See the GEAR DRAG note of section 1.
     // gearDragArea peaks IN TRANSIT, because the doors stand open across the
     // flow while the leg hangs halfway down.
@@ -542,6 +586,10 @@ export function createAircraft(): Aircraft {
       thrustMoment.crossVectors(engine.position, thrustForce);
       out.moment.add(thrustMoment);
     }
+
+    // 4a. BEAD b67. Anything from outside the flight model. The armament writes
+    // the gun recoil into it and owns the value.
+    addWrench(out, externalWrench);
 
     // 5. The ground. The gear and the airframe points were both built one time
     // before the step, into one wrench, and capped there.
@@ -577,6 +625,8 @@ export function createAircraft(): Aircraft {
     state,
     controls,
     assembly,
+    structure,
+    externalWrench,
     atmosphere,
     wrench: stepWrench,
 
@@ -604,6 +654,7 @@ export function createAircraft(): Aircraft {
 
       gear.reset();
       contacts.reset();
+      structure.reset();
       // The lagged separation point of every strip is state as well, and a value
       // that is not finite can never leave it on its own. See resetSurface.
       for (const surface of assembly.surfaces) {
@@ -631,6 +682,7 @@ export function createAircraft(): Aircraft {
       writeMass(FUEL_CAPACITY);
       clearWrench(stepWrench);
       clearWrench(groundWrench);
+      clearWrench(externalWrench);
       state.onGround = true;
       state.diverged = false;
       state.loadFactor = 1;
@@ -679,6 +731,30 @@ export function createAircraft(): Aircraft {
       eas = equivalentAirspeed(trueAirspeed, atmosphere.density);
       const mach = machNumber(trueAirspeed, atmosphere.speedOfSound);
 
+      // --- The structure, one time per step -------------------------------
+      // It reads the load factor of the LAST step, because the load factor of
+      // this one only exists once the wrench is built. One step is 1/240 s.
+      // Every failure it raises is a message the pilot can read.
+      structureInput.loadFactor = state.loadFactor;
+      structureInput.rollRate = body.angularVelocity.x;
+      structureInput.mass = massProperties.mass;
+      structureInput.trueAirspeed = trueAirspeed;
+      structureInput.altitude = altitude;
+      structureInput.fuelMass = systems.state.fuelMass;
+      structureInput.onGround = state.onGround;
+      for (let i = 0; i < engines.length; i++) {
+        structureInput.engineFire[i] = engines[i].state === 'fire';
+        structureInput.engineLightOff[i] = engines[i].events.lightOff;
+      }
+      for (let i = 0; i < gear.legs.length; i++) {
+        structureInput.tireBurst[i] = gear.legs[i].burst;
+        structureInput.brakeTemperature[i] = gear.legs[i].brakeTemp;
+      }
+      structure.update(structureInput, dt);
+      if (structure.events.raised) {
+        events.emit('failure', { message: structure.events.message, time: simTime });
+      }
+
       // --- The systems ----------------------------------------------------
       // The slat MECHANISM follows the local angle of the outer wing. The two
       // strips report the value of the last step, which is one step of lag on
@@ -707,6 +783,9 @@ export function createAircraft(): Aircraft {
       // The flap deflection and the slat position come from the systems, so the
       // aerodynamics sees the part where the mechanism has really moved to.
       systems.writeControls(controls);
+      // A jammed aileron holds where it jammed and a bent wing takes part of
+      // the roll control away. limits.ts runs LAST, on top of the commands.
+      structure.applyControls(controls);
 
       // --- The engines, one time per step ---------------------------------
       engineInput.throttle = clamp(input.throttle, 0, 1);
@@ -715,7 +794,17 @@ export function createAircraft(): Aircraft {
       engineInput.mach = mach;
       engineInput.airspeed = trueAirspeed;
       engineInput.density = atmosphere.density;
-      engineInput.fuelAvailable = systems.state.fuelMass > 0;
+      // The fuel system decides this, not the tank gauge. limits.ts takes the
+      // feed away when the pickup uncovers and when the last usable fuel is
+      // gone.
+      engineInput.fuelAvailable = structure.state.fuelAvailable;
+      for (let i = 0; i < engines.length; i++) {
+        // The handbook drill for a burning engine is to shut it down. limits.ts
+        // runs it when the fire has burned through the mount.
+        if (structure.state.engineShutdown[i]) {
+          engines[i].shutdown();
+        }
+      }
       for (const engine of engines) {
         // The fuel cock of THIS engine. See COCK_OPEN_RPM. A lit engine keeps
         // its cock open, so a flame out in the air can still relight while the

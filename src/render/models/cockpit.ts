@@ -126,6 +126,67 @@
  *   the cockpit view. A flight that never uses that view builds no interior.
  *   `setVisible(false)` clears `visible` on the root. Three.js then skips the
  *   whole subtree in the render list and in the shadow pass.
+ *
+ *
+ * 7. THE HOOD OCCLUDER, AND THE FAULT IT WORKS AROUND
+ *
+ * The hood of the exterior model is a CLOSED glass shell. `canopyRing` of
+ * src/render/models/me262.ts ends each ring with a line of points along the
+ * sill, so the loft carries a flat glass FLOOR at y = 0.56, and `capStart` and
+ * `capEnd` close both ends. From outside that floor never shows, because the
+ * fuselage skin covers it up to y = 0.75.
+ *
+ * From the eye of the pilot it does show. The eye stands only 0.07 m above the
+ * skin, so the skin ahead of the eye falls inside the 0.3 m near plane and the
+ * clip removes it. The line of sight to the panel then crosses the glass floor
+ * at about 0.34 m, and every dial reads through one more sheet of glass. The
+ * panel goes milky.
+ *
+ * THE REAL FIX BELONGS IN me262.ts. Bead henri-flight-sim-37m holds it. That
+ * file is out of scope for this bead, so the work around below stands until
+ * that bead lands.
+ *
+ * The work around here is two plates that write DEPTH and no COLOR. One lies
+ * over the glass floor and one stands aft of the two glass caps at station
+ * 3.74. The opaque pass draws the whole interior first, so a plate cannot hide
+ * it. The transparent pass then draws the plates before the glass, and the
+ * glass fails the depth test and never reaches the picture.
+ *
+ * A line of sight must fall more than 16.7 deg below the horizon to meet
+ * either plate. The view over the nose runs 5.7 deg below the horizon, so the
+ * windscreen, the armored glass and the whole view out stay untouched.
+ *
+ * NEITHER PLATE MAY GROW. A plate writes depth 0.4 m from the eye, and every
+ * transparent draw that follows fails against it. A plate over the forward
+ * window would therefore take out the clouds, the tracers and the exhaust as
+ * well as the glass. The milky forward view that is left belongs to bead
+ * henri-flight-sim-37m and to no work around here.
+ *
+ *
+ * 8. THE TWO HOOPS THE INTERIOR HIDES, AND THE SAME FAULT AGAIN
+ *
+ * `canopyHoop` of me262.ts wraps the SAME closed section, so each hood frame
+ * carries a solid bar across the cockpit at the sill line, 16 mm thick and 44
+ * mm deep. A canopy frame does not do that on a real aircraft, because a real
+ * hood is open at the bottom. The bar at station 3.76 belongs to the SLIDING
+ * half of the hood, so on a real aircraft that bar would sweep through the
+ * chest of the pilot when the hood opens. It is a modelling artifact and it is
+ * not framing. This file therefore hides it, and it hides no real framing.
+ *
+ * Two of those bars sit in the line of sight to the panel. The hoop at station
+ * 3.72 fills 29.9 to 31.4 deg below the horizon and the hoop at station 3.76
+ * fills 32.3 to 36.9 deg. Together they cover the whole second row of dials.
+ * The bars are OPAQUE, so the depth plates of section 7 cannot take them out.
+ *
+ * `setVisible` therefore hides those two meshes while the cockpit view runs,
+ * and puts them back for every other view. Nothing is lost: the bars sit 0.19
+ * m under the fuselage deck, which is opaque, so no outside view ever shows
+ * them, and this file draws its own frame member at station 3.71 in their
+ * place. EXTERIOR_HIDDEN_IN_COCKPIT holds the two names.
+ *
+ * DELETE THAT LIST, and the plates of section 7, once bead
+ * henri-flight-sim-37m opens the hood shell at the bottom. The one change in
+ * me262.ts fixes section 7 and section 8 together.
  */
 
 import type { Material } from 'three/webgpu';
@@ -208,6 +269,13 @@ export const ME262_COCKPIT_TRAVEL = {
 } as const;
 
 /**
+ * Meshes of the EXTERIOR model that the interior takes out of the picture
+ * while the cockpit view runs. Read section 8 for the reason. Bead
+ * henri-flight-sim-37m removes the need for this list.
+ */
+const EXTERIOR_HIDDEN_IN_COCKPIT = ['windscreen-hoop-1', 'canopy-hoop-0'];
+
+/**
  * Distance of the reticle plane ahead of the eye, in meters. Read section 5.
  * The value only sets the parallax, because every dimension of the mark scales
  * with it. One kilometer leaves an error of 0.003 deg for a 50 mm head move.
@@ -261,13 +329,22 @@ const PANEL_HALF_HEIGHT = 0.21;
 const PANEL_HALF_WIDTH_TOP = 0.29;
 const PANEL_HALF_WIDTH_BOTTOM = 0.36;
 
-/** Station and height of the reflector glass of the Revi 16B. */
-const SIGHT_GLASS_T = 3.755;
+/** Station of the reflector glass of the Revi 16B. */
+const SIGHT_GLASS_T = 3.745;
 
-/** Body of the Revi 16B, as a station range and a radius, in m. */
-const SIGHT_BODY_FRONT_T = 3.615;
-const SIGHT_BODY_BACK_T = 3.8;
-const SIGHT_BODY_RADIUS = 0.037;
+/**
+ * Body of the Revi 16B, as a station range, a radius and a height, in m.
+ *
+ * The body must stay AFT of station 3.607, where the armored glass of the
+ * exterior model ends, and it must stay 0.3 m from the eye, which is the near
+ * plane. The band between the two is narrow, so the body is short. The center
+ * line sits 0.105 m under the eye, so the body blocks the view from 16 deg
+ * below the horizon downward, which is where the glare shield already sits.
+ */
+const SIGHT_BODY_FRONT_T = 3.62;
+const SIGHT_BODY_BACK_T = 3.77;
+const SIGHT_BODY_RADIUS = 0.033;
+const SIGHT_BODY_Y = 0.715;
 
 // ---------------------------------------------------------------------------
 // Hood sections
@@ -344,7 +421,19 @@ function hoodPoint(station: HoodStation, u: number, inset: number): Vector3 {
  * Paint of the interior. A Luftwaffe cockpit of 1944 is RLM 66 black grey,
  * which is darker than the RLM 02 of a wheel well. Confidence firm.
  */
-const RLM_66_BLACK_GREY = 0x3a3d3c;
+const RLM_66_BLACK_GREY = 0x4b4e4d;
+
+/**
+ * Light that every interior surface gives off on its own.
+ *
+ * The fuselage closes over the cockpit and the sun casts a shadow over the
+ * whole interior, so only the sky map lights it. A surface that faces inboard
+ * or down then reads as pure black, and a black surface carries no shape. This
+ * small emission stands for the light that a real cockpit bounces off its own
+ * walls, which no direct light model gives. It is an ESTIMATE, tuned by eye
+ * until the side wall keeps its shape in the picture.
+ */
+const INTERIOR_BOUNCE = 0x141719;
 
 /** Every material the interior needs. */
 interface CockpitMaterials {
@@ -364,6 +453,8 @@ interface CockpitMaterials {
   sightGlass: MeshStandardNodeMaterial;
   /** The collimated mark. Read section 5. */
   reticle: MeshBasicNodeMaterial;
+  /** Depth only plate that hides the floor of the hood shell. Read section 7. */
+  occluder: MeshBasicNodeMaterial;
 }
 
 /** Gain of the reticle color. The mark must stay bright after tone mapping. */
@@ -375,41 +466,50 @@ function createCockpitMaterials(): CockpitMaterials {
     color: new Color(RLM_66_BLACK_GREY),
     roughness: 0.86,
     metalness: 0.04,
+    emissive: new Color(INTERIOR_BOUNCE),
   });
 
   const bezel = new MeshStandardNodeMaterial({
     name: 'cockpit-bezel',
-    color: new Color(0x1c1e1f),
-    roughness: 0.42,
-    metalness: 0.72,
+    // A high metalness with a dark color reads as pure black wherever the sky
+    // map gives no reflection, and a black surface carries no shape. The value
+    // stays low for that reason.
+    color: new Color(0x2b2e31),
+    roughness: 0.46,
+    metalness: 0.3,
+    emissive: new Color(0x101315),
   });
 
   const gaugeFace = new MeshStandardNodeMaterial({
     name: 'cockpit-gauge-face',
-    color: new Color(0x14161a),
+    color: new Color(0x1b1e22),
     roughness: 0.9,
     metalness: 0,
+    emissive: new Color(0x0a0c0e),
   });
 
   const steel = new MeshStandardNodeMaterial({
     name: 'cockpit-steel',
     color: new Color(0x8d9296),
-    roughness: 0.34,
-    metalness: 1,
+    roughness: 0.4,
+    metalness: 0.85,
+    emissive: new Color(0x0c0e10),
   });
 
   const grip = new MeshStandardNodeMaterial({
     name: 'cockpit-grip',
-    color: new Color(0x18191a),
+    color: new Color(0x232527),
     roughness: 0.88,
     metalness: 0.06,
+    emissive: new Color(0x0d0f11),
   });
 
   const leather = new MeshStandardNodeMaterial({
     name: 'cockpit-leather',
-    color: new Color(0x4a4034),
+    color: new Color(0x574a3c),
     roughness: 0.95,
     metalness: 0,
+    emissive: new Color(0x121013),
   });
 
   const sightGlass = new MeshStandardNodeMaterial({
@@ -435,7 +535,17 @@ function createCockpitMaterials(): CockpitMaterials {
   });
   reticle.colorNode = color(0xff8c1a).mul(float(RETICLE_GAIN));
 
-  return { paint, bezel, gaugeFace, steel, grip, leather, sightGlass, reticle };
+  // The plate of section 7. `transparent` puts it in the second pass, where it
+  // runs before the glass. `colorWrite` off leaves the picture alone.
+  const occluder = new MeshBasicNodeMaterial({
+    name: 'cockpit-hood-occluder',
+    transparent: true,
+    colorWrite: false,
+    depthWrite: true,
+    side: DoubleSide,
+  });
+
+  return { paint, bezel, gaugeFace, steel, grip, leather, sightGlass, reticle, occluder };
 }
 
 function disposeCockpitMaterials(set: CockpitMaterials): void {
@@ -447,6 +557,7 @@ function disposeCockpitMaterials(set: CockpitMaterials): void {
   set.leather.dispose();
   set.sightGlass.dispose();
   set.reticle.dispose();
+  set.occluder.dispose();
 }
 
 // ---------------------------------------------------------------------------
@@ -529,6 +640,27 @@ function rod(from: Vector3, to: Vector3, radius: number, sides = 10): BufferGeom
 function slab(center: Vector3, width: number, height: number, depth: number): BufferGeometry {
   const geometry = new BoxGeometry(width, height, depth);
   geometry.translate(center.x, center.y, center.z);
+  return geometry;
+}
+
+/**
+ * Build a tapered tube on the model z axis, between two stations. `y` puts the
+ * center line above the model center line.
+ */
+function taperZ(
+  frontT: number,
+  backT: number,
+  radiusFront: number,
+  radiusBack: number,
+  y: number,
+  sides = 14,
+): BufferGeometry {
+  const length = Math.abs(backT - frontT);
+  // The cylinder stands on +y with the top at +height / 2, so a quarter turn
+  // about x puts the top on +z, which is aft.
+  const geometry = new CylinderGeometry(radiusBack, radiusFront, length, sides, 1, false);
+  geometry.rotateX(Math.PI / 2);
+  geometry.translate(0, y, aft((frontT + backT) / 2));
   return geometry;
 }
 
@@ -698,6 +830,17 @@ function buildPanel(context: BuildContext): void {
     add(context, panel, stem, context.materials.steel, `panel-switch-${i}`);
   }
 
+  // The knee panel closes the gap under the main plate. Without it the pilot
+  // looks past the panel, through the skin that the near plane clipped, and
+  // out at the ground.
+  add(
+    context,
+    panel,
+    slab(new Vector3(0, -0.305, 0.03), 0.72, 0.21, 0.03),
+    context.materials.paint,
+    'knee-panel',
+  );
+
   // The glare shield. It leans back over the panel and it holds the gunsight.
   // The aft edge stands at y = 0.685, which is aft of the armored glass, so
   // the two never meet. Read section 2 of the module comment.
@@ -726,53 +869,85 @@ function buildGunsight(context: BuildContext): Object3D {
   sight.name = 'revi-16b';
   context.root.add(sight);
 
-  const bodyY = 0.755;
-  const bodyFront = new Vector3(0, bodyY, aft(SIGHT_BODY_FRONT_T));
-  const bodyBack = new Vector3(0, bodyY, aft(SIGHT_BODY_BACK_T));
+  const bodyY = SIGHT_BODY_Y;
 
   // The bracket that carries the sight off the glare shield.
   add(
     context,
     sight,
-    rod(new Vector3(0, 0.648, aft(3.62)), new Vector3(0, 0.735, aft(3.7)), 0.017, 8),
-    context.materials.grip,
+    rod(new Vector3(0, 0.645, aft(3.63)), new Vector3(0, 0.7, aft(3.67)), 0.018, 8),
+    context.materials.paint,
     'sight-bracket',
   );
 
-  add(context, sight, rod(bodyFront, bodyBack, SIGHT_BODY_RADIUS, 14), context.materials.grip, 'sight-body');
+  // The body. Its aft end tapers, so it does not read as a black disc on the
+  // end of a pipe.
+  add(
+    context,
+    sight,
+    taperZ(SIGHT_BODY_FRONT_T, SIGHT_BODY_BACK_T, SIGHT_BODY_RADIUS, SIGHT_BODY_RADIUS, bodyY),
+    context.materials.paint,
+    'sight-body',
+  );
+  add(
+    context,
+    sight,
+    taperZ(SIGHT_BODY_BACK_T, SIGHT_BODY_BACK_T + 0.05, SIGHT_BODY_RADIUS, 0.018, bodyY),
+    context.materials.paint,
+    'sight-body-taper',
+  );
 
   // The lamp housing hangs under the front of the body.
   add(
     context,
     sight,
-    slab(new Vector3(0, bodyY - 0.045, aft(3.68)), 0.06, 0.05, 0.09),
-    context.materials.grip,
+    slab(new Vector3(0, bodyY - 0.042, aft(3.68)), 0.058, 0.05, 0.085),
+    context.materials.paint,
     'sight-lamp',
   );
 
   // Two collars break the plain tube, as the real body does.
-  for (const [index, t] of [3.665, 3.775].entries()) {
-    const collar = new CylinderGeometry(SIGHT_BODY_RADIUS + 0.006, SIGHT_BODY_RADIUS + 0.006, 0.012, 14);
-    collar.rotateX(Math.PI / 2);
-    collar.translate(0, bodyY, aft(t));
-    add(context, sight, collar, context.materials.steel, `sight-collar-${index}`);
+  for (const [index, t] of [3.655, 3.755].entries()) {
+    add(
+      context,
+      sight,
+      taperZ(t - 0.006, t + 0.006, SIGHT_BODY_RADIUS + 0.005, SIGHT_BODY_RADIUS + 0.005, bodyY),
+      context.materials.steel,
+      `sight-collar-${index}`,
+    );
   }
 
-  // The reflector glass. It leans its top toward the pilot by SIGHT_GLASS_TILT,
-  // so the beam of the lamp turns through a right angle into the eye.
+  // The neck that carries the glass off the top of the body.
+  add(
+    context,
+    sight,
+    slab(new Vector3(0, 0.752, aft(SIGHT_GLASS_T + 0.028)), 0.1, 0.03, 0.03),
+    context.materials.paint,
+    'sight-neck',
+  );
+
+  // The reflector glass. It leans its top toward the pilot by 41 deg, so the
+  // beam of the lamp turns through about a right angle into the eye. The
+  // center sits 0.018 m under the eye line, so the mark of section 5 falls
+  // inside the glass with room above it.
   const glassTilt = 41 * DEG;
-  const glass = new BoxGeometry(0.11, 0.095, 0.005);
+  const glassY = EYE.y - 0.018;
+  const glass = new BoxGeometry(0.12, 0.12, 0.005);
   glass.rotateX(glassTilt);
-  glass.translate(0, EYE.y + 0.002, aft(SIGHT_GLASS_T));
+  glass.translate(0, glassY, aft(SIGHT_GLASS_T));
   add(context, sight, glass, context.materials.sightGlass, 'sight-glass');
 
-  // A light frame down each side of the glass.
+  // A light frame down each side of the glass, and a bar across its top.
   for (const side of [1, -1] as const) {
-    const post = new BoxGeometry(0.007, 0.1, 0.009);
+    const post = new BoxGeometry(0.007, 0.125, 0.009);
     post.rotateX(glassTilt);
-    post.translate(side * 0.056, EYE.y + 0.002, aft(SIGHT_GLASS_T));
+    post.translate(side * 0.061, glassY, aft(SIGHT_GLASS_T));
     add(context, sight, post, context.materials.steel, `sight-glass-post-${side === 1 ? 'r' : 'l'}`);
   }
+  const glassTop = new BoxGeometry(0.129, 0.008, 0.009);
+  glassTop.rotateX(glassTilt);
+  glassTop.translate(0, glassY + 0.06 * Math.cos(glassTilt), aft(SIGHT_GLASS_T) + 0.06 * Math.sin(glassTilt));
+  add(context, sight, glassTop, context.materials.steel, 'sight-glass-top');
 
   // --- The collimated mark. Read section 5 of the module comment. ---------
   const reticle = new Object3D();
@@ -822,17 +997,39 @@ function buildStructure(context: BuildContext): void {
   add(
     context,
     context.root,
-    slab(new Vector3(0, FLOOR_Y, aft(4.0)), 0.62, 0.02, 1.5),
+    slab(new Vector3(0, FLOOR_Y, aft(4.0)), 0.8, 0.02, 1.6),
     context.materials.paint,
     'cockpit-floor',
   );
 
   for (const side of [1, -1] as const) {
-    const wall = new BoxGeometry(0.02, 0.9, 1.72);
-    // The wall runs from x = 0.412 at the floor to x = 0.324 at the sill.
+    // The wall reaches from the front bulkhead at station 3.16 to station 5.02.
+    // It must meet the bulkhead. The fuselage skin is a single sided surface,
+    // so a gap in the side of the cockpit shows the ground through the skin,
+    // and a head that turns 40 deg and looks 25 deg down finds that gap.
+    const wall = new BoxGeometry(0.02, 0.9, 1.86);
+    // The wall runs from x = 0.412 at the floor to x = 0.324 at the sill. The
+    // skin holds a half width of 0.49 at that height, so the wall stays inside.
     wall.rotateZ(side * 5.6 * DEG);
-    wall.translate(side * 0.368, 0.13, aft(4.16));
+    wall.translate(side * 0.368, 0.13, aft(4.09));
     add(context, context.root, wall, context.materials.paint, `cockpit-wall-${side === 1 ? 'r' : 'l'}`);
+  }
+
+  // Frame ribs down each side. A cockpit wall of one flat plate reads as a
+  // box, and the eye needs a repeat to judge the length of the space.
+  for (const side of [1, -1] as const) {
+    for (const [index, t] of [3.72, 4.16, 4.6].entries()) {
+      const rib = new BoxGeometry(0.026, 0.78, 0.05);
+      rib.rotateZ(side * 5.6 * DEG);
+      rib.translate(side * 0.352, 0.17, aft(t));
+      add(
+        context,
+        context.root,
+        rib,
+        context.materials.bezel,
+        `cockpit-rib-${side === 1 ? 'r' : 'l'}-${index}`,
+      );
+    }
   }
 
   // The bulkhead ahead of the pedals closes the foot well.
@@ -859,6 +1056,45 @@ function buildStructure(context: BuildContext): void {
     context.materials.paint,
     'rear-deck',
   );
+}
+
+/**
+ * The two plates that hide the closed parts of the hood shell. Read section 7.
+ *
+ * The FLOOR plate lies 2.5 mm above the glass floor at y = 0.56. The CAP plate
+ * stands 5 mm aft of the two flat glass discs that close the hood at station
+ * 3.74, and it reaches up to y = 0.715. A line of sight to the panel crosses
+ * that station under y = 0.70, and the view over the nose crosses it at y =
+ * 0.78, so the plate takes the caps out and leaves the view alone.
+ *
+ * Each plate goes in twice, with a render order of +1 and of -1, and the two
+ * meshes share one geometry. The reversed depth buffer of this project turns
+ * the painter order over, which CONVENTIONS section 6a warns about, and this
+ * file holds no renderer to read `reversedDepthBuffer` from. One of the two
+ * meshes therefore always reaches the depth buffer before the glass. The other
+ * one writes depth that no later draw reads, so it costs one draw call and
+ * changes nothing.
+ */
+function buildHoodOccluder(context: BuildContext): void {
+  const addPair = (geometry: BufferGeometry, name: string): void => {
+    for (const order of [1, -1] as const) {
+      const mesh = new Mesh(geometry, context.materials.occluder);
+      mesh.name = `${name}-${order > 0 ? 'a' : 'b'}`;
+      mesh.renderOrder = order;
+      mesh.castShadow = false;
+      mesh.receiveShadow = false;
+      context.root.add(mesh);
+    }
+    context.geometries.push(geometry);
+  };
+
+  // The floor plate covers only the cone that reaches the panel, which is the
+  // stations 3.35 to 4.01 and 0.31 m to each side. A wider plate writes depth
+  // over the view out of the cockpit, and the ambient occlusion of the post
+  // chain then reads that depth as a surface 0.34 m from the eye and paints
+  // the area black.
+  addPair(slab(new Vector3(0, 0.5625, aft(3.68)), 0.62, 0.003, 0.66), 'hood-floor-occluder');
+  addPair(slab(new Vector3(0, 0.635, aft(3.7455)), 0.62, 0.17, 0.003), 'hood-cap-occluder');
 }
 
 function buildSeat(context: BuildContext): void {
@@ -972,7 +1208,7 @@ function buildConsoles(context: BuildContext, pivots: Partial<Me262CockpitPivots
   add(
     context,
     context.root,
-    slab(new Vector3(-0.3, CONSOLE_Y + 0.02, aft(4.34)), 0.12, 0.03, 0.28),
+    slab(new Vector3(-0.3, CONSOLE_Y + 0.02, aft(4.06)), 0.12, 0.03, 0.28),
     context.materials.bezel,
     'throttle-base',
   );
@@ -981,7 +1217,7 @@ function buildConsoles(context: BuildContext, pivots: Partial<Me262CockpitPivots
   add(
     context,
     context.root,
-    slab(new Vector3(-0.365, CONSOLE_Y + 0.07, aft(4.34)), 0.012, 0.1, 0.28),
+    slab(new Vector3(-0.365, CONSOLE_Y + 0.07, aft(4.06)), 0.012, 0.1, 0.28),
     context.materials.bezel,
     'throttle-guard',
   );
@@ -994,7 +1230,7 @@ function buildConsoles(context: BuildContext, pivots: Partial<Me262CockpitPivots
     const pivot = makePivot(
       context.root,
       `throttle${engine}`,
-      new Vector3(x, CONSOLE_Y + 0.035, aft(4.42)),
+      new Vector3(x, CONSOLE_Y + 0.035, aft(4.14)),
       Math.PI,
     );
     add(
@@ -1199,6 +1435,7 @@ export function createMe262Cockpit(): Me262Cockpit {
   const pivots: Partial<Me262CockpitPivots> = {};
 
   buildStructure(context);
+  buildHoodOccluder(context);
   buildSeat(context);
   buildConsoles(context, pivots);
   buildPanel(context);
@@ -1212,6 +1449,23 @@ export function createMe262Cockpit(): Me262Cockpit {
   // idle stop, which is zero, because the aircraft spawns with the engines off.
   for (const pivot of Object.values(complete)) pivot.rotation.set(0, 0, 0);
 
+  // The exterior meshes of section 8. The list is empty until the caller adds
+  // `root` to the model, because only then can this module reach them.
+  let hoops: Object3D[] | null = null;
+
+  /** Finds the two hoops of section 8 one time, then holds them. */
+  function findHoops(): Object3D[] {
+    if (hoops !== null) return hoops;
+    const parent = root.parent;
+    if (parent === null) return [];
+    hoops = [];
+    for (const name of EXTERIOR_HIDDEN_IN_COCKPIT) {
+      const found = parent.getObjectByName(name);
+      if (found !== undefined) hoops.push(found);
+    }
+    return hoops;
+  }
+
   return {
     root,
     gauges: context.gauges,
@@ -1220,9 +1474,13 @@ export function createMe262Cockpit(): Me262Cockpit {
 
     setVisible(v: boolean): void {
       root.visible = v;
+      for (const hoop of findHoops()) hoop.visible = !v;
     },
 
     dispose(): void {
+      // The hoops belong to the exterior model, so they must go back.
+      for (const hoop of findHoops()) hoop.visible = true;
+      hoops = null;
       for (const geometry of context.geometries) geometry.dispose();
       context.geometries.length = 0;
       disposeCockpitMaterials(materials);
