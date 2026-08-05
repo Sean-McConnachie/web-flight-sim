@@ -57,7 +57,6 @@ export type TouchButtonName =
   | 'view'
   | 'fire'
   | 'engineStart'
-  | 'menu'
   | 'panels'
   | 'respawn';
 
@@ -71,7 +70,6 @@ export const TOUCH_BUTTON_NAMES: readonly TouchButtonName[] = [
   'view',
   'fire',
   'engineStart',
-  'menu',
   'panels',
   'respawn',
 ];
@@ -180,9 +178,15 @@ const THROTTLE_BUTTONS: readonly ButtonSpec[] = [
   { name: 'throttleDown', label: 'THR -', hold: true },
 ];
 
-/** The pill buttons of the top bar. */
+/**
+ * The pill buttons of the top bar.
+ *
+ * The CONTROLS button of src/ui/controls-menu.ts stands in the same row, to the
+ * LEFT of these. It belongs to that module and not to this one, because it must
+ * also stand on a desktop where this pad does not exist. TOP_BAR_INDENT below
+ * holds the room this row leaves for it.
+ */
 const BAR_BUTTONS: readonly ButtonSpec[] = [
-  { name: 'menu', label: 'MENU', hold: false },
   { name: 'panels', label: 'PANELS', hold: false },
 ];
 
@@ -342,10 +346,15 @@ const CSS = `
   position: relative;
 }
 
-/* The top bar. It carries the menu, the panels and the collapse. */
+/* The top bar. It carries the panels switch and the collapse.
+
+   The 112 px indent is the width of the CONTROLS button of
+   src/ui/controls-menu.ts, which is 104 px, and the 8 px gap this row uses
+   between its own pills. That button stands first in the row, because it is
+   the one control that leads a new pilot to every other control. */
 .hfs-touch-bar {
   position: absolute;
-  left: max(12px, env(safe-area-inset-left));
+  left: calc(max(12px, env(safe-area-inset-left)) + 112px);
   top: max(12px, env(safe-area-inset-top));
   display: flex;
   gap: 8px;

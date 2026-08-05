@@ -95,6 +95,16 @@ export interface ControlsMenu {
   dispose(): void;
 }
 
+/**
+ * Width of the CONTROLS button, px.
+ *
+ * The top bar of the touch pad stands to the RIGHT of that button and indents
+ * itself by this width plus its own 8 px gap. The number therefore appears in
+ * the style sheet of src/input/touch.ts as well, and the comment there names
+ * this constant. A pad may not import a panel, so the two cannot share it.
+ */
+export const MENU_BUTTON_WIDTH = 104;
+
 // ---------------------------------------------------------------------------
 // The words
 // ---------------------------------------------------------------------------
@@ -191,7 +201,6 @@ const TOUCH_LABELS: Record<string, string> = {
   view: 'VIEW',
   fire: 'FIRE',
   engineStart: 'ENG',
-  menu: 'MENU',
   panels: 'PANELS',
   respawn: 'RESET',
 };
@@ -340,6 +349,41 @@ export function buildRows(bindings: readonly Binding[] = DEFAULT_BINDINGS): read
 const STYLE_ID = 'hfs-menu-style';
 
 const CSS = `
+/* The button that opens the panel.
+
+   It stands FIRST in the top left row, above every other overlay, and it never
+   leaves the screen while the panel is shut. A pilot who has just loaded the
+   page has no way to know that a menu exists, and the panel switch of the H
+   key cannot teach them, because a key nobody can see is a key nobody presses.
+
+   It is 104 px wide, and MENU_BUTTON_WIDTH holds that number for the touch pad
+   to indent by. The panel switch does NOT hide it: help that a pilot cannot
+   reach is worse than a small button in the corner. */
+.hfs-menu-open {
+  position: absolute;
+  left: max(12px, env(safe-area-inset-left));
+  top: max(12px, env(safe-area-inset-top));
+  width: 104px;
+  height: 34px;
+  z-index: 8;
+  pointer-events: auto;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+  box-sizing: border-box;
+  padding: 0;
+  border-radius: 17px;
+  background: rgba(6, 14, 10, 0.72);
+  border: 1px solid rgba(120, 200, 150, 0.55);
+  color: #d8ffe6;
+  font: 600 11px/1 ui-monospace, 'DejaVu Sans Mono', monospace;
+  letter-spacing: 0.08em;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.9);
+}
+.hfs-menu-open:hover {
+  background: rgba(120, 200, 150, 0.3);
+  border-color: rgba(216, 255, 230, 0.8);
+}
 .hfs-menu-scrim {
   position: absolute;
   inset: 0;
@@ -522,6 +566,14 @@ export function createControlsMenu(
 ): ControlsMenu {
   ensureStyle();
 
+  // The button that opens the panel. See the style sheet for why it exists.
+  const openButton = document.createElement('button');
+  openButton.type = 'button';
+  openButton.className = 'hfs-menu-open';
+  openButton.textContent = 'CONTROLS';
+  openButton.title = 'Open the controls menu. The H key does the same.';
+  parent.appendChild(openButton);
+
   const scrim = makeDiv('hfs-menu-scrim', parent);
   const panel = makeDiv('hfs-menu-panel', scrim);
 
@@ -582,6 +634,10 @@ export function createControlsMenu(
     if (value === visible) return;
     visible = value;
     scrim.classList.toggle('open', visible);
+    // The scrim covers the button, and a tap that landed on it would reach the
+    // scrim and shut the panel. That reads as a button that does the opposite
+    // of what it says, so the button leaves the screen while the panel is open.
+    openButton.style.display = visible ? 'none' : '';
     if (visible) {
       refreshPadButton();
       scrim.scrollTop = 0;
@@ -601,6 +657,11 @@ export function createControlsMenu(
     closeButton.blur();
     setVisible(false);
   };
+  const onOpen = (event: Event): void => {
+    event.preventDefault();
+    openButton.blur();
+    setVisible(true);
+  };
   // A tap on the scrim closes the panel. A tap INSIDE the panel must not, so
   // the test reads the target and not the currentTarget.
   const onScrim = (event: Event): void => {
@@ -609,6 +670,7 @@ export function createControlsMenu(
 
   padButton.addEventListener('click', onPad);
   closeButton.addEventListener('click', onClose);
+  openButton.addEventListener('click', onOpen);
   scrim.addEventListener('click', onScrim);
 
   return {
@@ -627,7 +689,9 @@ export function createControlsMenu(
     dispose(): void {
       padButton.removeEventListener('click', onPad);
       closeButton.removeEventListener('click', onClose);
+      openButton.removeEventListener('click', onOpen);
       scrim.removeEventListener('click', onScrim);
+      openButton.remove();
       scrim.remove();
     },
   };

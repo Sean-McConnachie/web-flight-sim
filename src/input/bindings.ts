@@ -331,7 +331,11 @@ export function controlAuthority(dynamicPressure: number): number {
  *   THR + and THR -  throttle, as a rate
  *   the button block gear, both flap steps, both brakes, view, cannon, engine
  *                    start and respawn
- *   the top bar      the controls menu and the overlay panels
+ *   the top bar      the overlay panels, and the pad itself
+ *
+ * The pad has no control for the MENU. src/ui/controls-menu.ts draws its own
+ * button, and that button stands on every device, so a second one here would
+ * be the same action in two places on a phone and in one place on a desktop.
  *
  * The pad carries no look control, no debug level and no free camera. A phone
  * screen holds the controls that fly the aircraft and no more.
@@ -406,10 +410,23 @@ export const DEFAULT_BINDINGS: readonly Binding[] = [
     touch: 'engineStart',
   },
   { action: 'fireCannon', kind: 'button', gamepad: 'rightBumper', keys: ['Space'], touch: 'fire' },
-  { action: 'toggleMenu', kind: 'button', gamepad: 'start', keys: ['Escape'], touch: 'menu' },
-  // F1 is the key a browser user reaches for first, and Escape is the key a
-  // game player reaches for first. Both open the same menu.
-  { action: 'toggleMenu', kind: 'button', keys: ['F1'] },
+
+  // The controls menu sits on H, for HELP.
+  //
+  // It held F1 before, and F1 was the wrong key. A browser answers F1 with its
+  // OWN help window, and nothing on this page can stop it: the keyboard reader
+  // of src/input/keyboard.ts reads the event and never cancels it. A pilot who
+  // pressed F1 therefore got the help of the browser over the top of the help
+  // of the simulator.
+  //
+  // H is a letter key, so it needs no modifier and no function row. A phone
+  // keyboard and a small laptop both have it. src/ui/controls-menu.ts also
+  // draws a button, because a key nobody can see is a key nobody presses.
+  //
+  // Escape stays as the second key. It is the key a game player reaches for.
+  { action: 'toggleMenu', kind: 'button', gamepad: 'start', keys: ['KeyH'] },
+  { action: 'toggleMenu', kind: 'button', keys: ['Escape'] },
+
   { action: 'toggleDebug', kind: 'button', keys: ['F3'] },
   { action: 'trimUp', kind: 'button', keys: ['BracketRight'] },
   { action: 'trimDown', kind: 'button', keys: ['BracketLeft'] },
@@ -417,7 +434,11 @@ export const DEFAULT_BINDINGS: readonly Binding[] = [
   // The three actions below moved out of src/main.ts and into this table. They
   // used to sit on a separate key listener, so the controls menu could not find
   // them and no pad could reach them. Every pilot control now has one home.
-  { action: 'toggleHud', kind: 'button', keys: ['KeyH'], touch: 'panels' },
+  //
+  // The panel switch held H until the menu took that key. It moved to U, for
+  // the USER INTERFACE it hides. U carries no other action, it needs no
+  // modifier, and it sits under the same hand as the panels it clears.
+  { action: 'toggleHud', kind: 'button', keys: ['KeyU'], touch: 'panels' },
   { action: 'respawn', kind: 'button', keys: ['KeyR'], touch: 'respawn' },
   { action: 'toggleFreeCamera', kind: 'button', keys: ['F2'] },
 ];

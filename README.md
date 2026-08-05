@@ -1,7 +1,9 @@
-# henri-flight-sim
+# web-flight-sim
 
 A flight simulator of the Messerschmitt Me-262 A-1a, in TypeScript, in the
 browser.
+
+![The Me-262 at 1400 m, seen from the orbit view](docs/images/flight.jpg)
 
 The flight model builds the total force and moment from separate parts. It sums
 twenty two lifting strips, three bodies, two engines, three landing gear legs
@@ -23,21 +25,41 @@ WebGPU or WebGL 2. A phone works: the page draws its own controls when it sees a
 touch screen.
 
 `.github/workflows/deploy.yml` builds and publishes the page. It runs the type
-check, the 871 unit tests and the 26 flight tests first. A broken flight model
+check, the unit tests and the flight tests first. A broken flight model
 therefore cannot reach the site.
+
+![The aircraft on the runway, with the head up display, the debug overlay and
+the telemetry chart](docs/images/chase.jpg)
+
+The virtual cockpit carries fifteen live instruments. It builds itself on the
+first frame in that view, so a flight that never uses the view never pays for
+it.
+
+![The virtual cockpit, with the gunsight and the instrument
+panel](docs/images/cockpit.jpg)
 
 ## Run it
 
 ```sh
 npm install          # install the dependencies, once
 npm run dev          # start the Vite dev server on port 5173
-npm run test:unit    # 871 unit tests
+npm run test:unit    # 873 unit tests
 npm run test:flight  # 26 flight tests, 31 measurements
 npm run typecheck    # the TypeScript compiler, no emit
 npm run lint:ste     # check the prose of every document
 ```
 
 `npm run build` runs the type check and then builds the bundle.
+
+`npm run screenshots` writes the pictures above again. Start `vite preview`
+first. The tool drives a headless browser over the Chrome DevTools Protocol. It
+clicks the CONTROLS button, presses the keys, places the aircraft in the air,
+and holds the mouse to look down at the panel. It stops with an error when a
+control does not answer, so the pictures cannot go stale in silence.
+
+Headless Chrome runs the WebGL 2 path with a software rasterizer. The pictures
+therefore show the layout and the instruments. They do NOT show what a real card
+draws.
 
 ## Running on a hybrid graphics laptop
 
@@ -76,17 +98,23 @@ WebGL2 backend, so check the backend before you trust a screenshot.
 | Change the view | V | Y |
 | Look around | the mouse, left button held | right stick |
 | Respawn | R | |
-| The controls menu | Escape or F1 | Start |
-| Hide every panel | H | |
+| The controls menu | H, or Escape | Start |
+| Hide every panel | U | |
 | Debug level | F3 | |
 
-**Press Escape or F1 for the full list.** The menu builds every row from the
-binding table, so it can never disagree with the code.
+**Press H, or click the CONTROLS button, for the full list.** The button stands
+in the top left corner of every view. The menu builds each row from the binding
+table, so it can never disagree with the code.
+
+![The controls menu, with the keyboard, the gamepad and the touch controls side
+by side](docs/images/controls-menu.png)
 
 **A phone gets an on screen pad.** It has a stick, a rudder bar, a throttle
 rocker and a block of buttons. It appears on its own when the browser reports a
 touch screen with no cursor. To see it on a desktop, add `?touch=1` to the
 address or press the TOUCH PAD button in the menu.
+
+![The on screen pad on a phone in landscape](docs/images/touch-controls.jpg)
 
 The throttle is a RATE and not a position. A full sweep takes 2 seconds.
 

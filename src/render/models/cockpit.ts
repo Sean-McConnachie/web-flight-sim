@@ -132,8 +132,8 @@
  *
  * This file once held two depth only plates and a list of two exterior hoops
  * to hide. Both worked around a CLOSED hood shell in
- * src/render/models/me262.ts. Bead henri-flight-sim-37m opened that shell at
- * the sill, so the plates and the list are gone. Do not put them back.
+ * src/render/models/me262.ts. Bead 37m opened that shell at the sill, so the
+ * plates and the list are gone. Do not put them back.
  */
 
 import type { Material } from 'three/webgpu';

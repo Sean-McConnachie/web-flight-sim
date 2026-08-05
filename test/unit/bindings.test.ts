@@ -536,6 +536,50 @@ describe('the binding table', () => {
       expect(named).toBe(true);
     }
   });
+
+  it('no key carries two actions, apart from the pair that shares one on purpose', () => {
+    // The menu once sat on H while the panel switch also sat on H, and both
+    // fired on the same press. This test is what stops that from returning.
+    //
+    // One code carries two actions on purpose: B applies BOTH wheel brakes, so
+    // it appears on brakeLeft and on brakeRight. Nothing else may share.
+    const allowed: Record<string, readonly string[]> = {
+      KeyB: ['brakeLeft', 'brakeRight'],
+    };
+
+    const owners = new Map<string, Set<string>>();
+    for (const binding of DEFAULT_BINDINGS) {
+      if (binding.keys === undefined) continue;
+      for (const code of binding.keys) {
+        const set = owners.get(code) ?? new Set<string>();
+        set.add(binding.action);
+        owners.set(code, set);
+      }
+    }
+
+    for (const [code, actions] of owners) {
+      if (actions.size === 1) continue;
+      expect([...actions].sort()).toEqual([...(allowed[code] ?? [])].sort());
+    }
+  });
+
+  it('the menu is on H and the panel switch is on U', () => {
+    // F1 is the help key of the BROWSER, and this page cannot cancel it, so the
+    // menu must not sit there. See the comment above the two rows.
+    const keysOf = (action: string): string[] => {
+      const codes: string[] = [];
+      for (const binding of DEFAULT_BINDINGS) {
+        if (binding.action !== action || binding.keys === undefined) continue;
+        for (const code of binding.keys) codes.push(code);
+      }
+      return codes.sort();
+    };
+    expect(keysOf('toggleMenu')).toEqual(['Escape', 'KeyH']);
+    expect(keysOf('toggleHud')).toEqual(['KeyU']);
+    for (const binding of DEFAULT_BINDINGS) {
+      expect(binding.keys?.includes('F1') ?? false).toBe(false);
+    }
+  });
 });
 
 describe('the on screen pad', () => {

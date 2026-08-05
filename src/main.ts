@@ -446,7 +446,16 @@ async function main(): Promise<void> {
   let useFreeCamera = false;
 
   // --- The debug view ----------------------------------------------------
-  const debug = createDebugOverlay(overlay);
+  // The panel places itself at the top left of its parent. The CONTROLS button
+  // of src/ui/controls-menu.ts and the top bar of the touch pad both stand
+  // there now, so the parent starts BELOW that row. The panel then keeps its
+  // own 12 px inset and needs no change.
+  const debugCorner = document.createElement('div');
+  debugCorner.style.position = 'absolute';
+  debugCorner.style.inset = '46px 0 0 0';
+  debugCorner.style.pointerEvents = 'none';
+  overlay.appendChild(debugCorner);
+  const debug = createDebugOverlay(debugCorner);
   // The overlay panel and the chart both place themselves at the left of their
   // parent. A tall panel on a short window then covers the chart, so the chart
   // gets its own corner. The chart still positions itself inside this box.

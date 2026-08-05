@@ -81,8 +81,8 @@ gives.
 | V | change the view |
 | Home | engine start, held |
 | Space | fire the cannon, held |
-| Escape or F1 | the controls menu |
-| H | hide or show every overlay panel |
+| H, or Escape | the controls menu |
+| U | hide or show every overlay panel |
 | R | respawn on the runway |
 | F2 | the developer free camera |
 | F3 | the debug level |
@@ -116,9 +116,12 @@ turns it off.
 | VIEW | button block | change the view |
 | FIRE | button block | fire the cannon, held |
 | RESET | button block | respawn on the runway |
-| MENU | top bar | the controls menu |
 | PANELS | top bar | hide or show every overlay panel |
 | HIDE PAD | top bar | collapse the pad to this one button |
+
+The pad has no control for the menu. The CONTROLS button of the next section
+stands in the same top row, and it stands on every device. A control here would
+put one action in two places on a phone and in one place on a desktop.
 
 **A finger down the screen pulls the stick back.** The stick reports a positive
 Y when the thumb moves toward the bottom of the screen. The gamepad left stick
@@ -144,13 +147,32 @@ reader releases every key on blur.
 
 ## The controls menu
 
-Escape, F1, the gamepad Start button and the MENU button of the pad all open the
-same panel. `src/ui/controls-menu.ts` builds it.
+`src/ui/controls-menu.ts` builds the panel. Four controls open it: the CONTROLS
+button, the H key, the Escape key and the gamepad Start button.
+
+**The CONTROLS button stands in the top left corner of every view.** A pilot who
+has just loaded the page has no way to know that a menu exists. A key alone
+cannot teach them, because a key nobody can see is a key nobody presses. The
+button leaves the screen while the panel is open, and the panel switch does not
+hide it. Help a pilot cannot reach is worse than a small button in a corner.
+
+**H is the key, and F1 is not.** F1 held the menu for one day and F1 was the
+wrong key. A browser answers F1 with its OWN help window, and this page cannot
+stop it: the reader in `src/input/keyboard.ts` reads the event and never cancels
+it. A pilot who pressed F1 therefore got two help windows, one over the other. H
+is a letter key, so it needs no modifier and no function row.
+
+The panel switch moved to U when the menu took H. See the section below.
 
 The panel prints one row for each action, with the controls of all three devices
 side by side. It builds every row from `DEFAULT_BINDINGS`, so a change to a
 binding changes the printed list on the next start. A list written by hand goes
 stale the first time somebody moves a key.
+
+A unit test holds every keyboard code against every other one. Two actions on
+one key is an error. The one pair that shares a key on purpose is named in that
+test. B applies both wheel brakes, so it stands on `brakeLeft` and on
+`brakeRight`.
 
 Two things the binding table cannot supply live in that file. `ACTION_INFO`
 gives the words for each action. Its type is a complete record over
@@ -168,10 +190,17 @@ panel is open, so a pilot who opens it in a turn comes back to the turn.
 
 ## Hiding the panels
 
-H on the keyboard, and the PANELS button of the pad, raise the `toggleHud`
+U on the keyboard, and the PANELS button of the pad, raise the `toggleHud`
 action. It hides the head up display, the debug overlay and the telemetry chart
 together, and it shows all of them again. A phone screen is small and the panels
 cover the aircraft, so the pilot needs one control that clears the picture.
+
+U stands for the USER INTERFACE it hides. The action held H first, and the menu
+then took that key. A pilot looks for help far more often than a pilot clears
+the glass. U carries no other action and it needs no modifier.
+
+The CONTROLS button stays on the screen through this action. Every other panel
+goes.
 
 It is a separate switch from the debug level of F3. The debug level chooses
 WHICH instruments run. This switch chooses whether any of them draws, so the

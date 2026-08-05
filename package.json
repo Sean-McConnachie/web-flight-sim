@@ -1,5 +1,5 @@
 {
-  "name": "henri-flight-sim",
+  "name": "web-flight-sim",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -13,7 +13,8 @@
     "test:unit": "vitest run test/unit",
     "test:flight": "vitest run test/flight",
     "test:watch": "vitest",
-    "lint:ste": "node tools/ste-lint.mjs docs README.md"
+    "lint:ste": "node tools/ste-lint.mjs docs README.md",
+    "screenshots": "node tools/screenshot.mjs"
   },
   "dependencies": {
     "three": "0.185.1"
