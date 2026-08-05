@@ -413,6 +413,9 @@ export function createAssembly(
       flowAngles(airspeed, flow);
       const speed = flow.speed;
       const freeStreamPressure = dynamicPressure(atmosphere.density, speed);
+      // The downwash model reads it. Both transonic laws of section 5 of
+      // src/physics/aero/downwash.ts answer the shock the WING meets.
+      const freeStreamMach = machNumber(speed, atmosphere.speedOfSound);
 
       // SECTION 1a. The separation point of every strip at the moment of the
       // call. Every pass below starts again from this value, so the loop moves
@@ -469,6 +472,7 @@ export function createAssembly(
           flow.alpha,
           flow.beta,
           speed,
+          freeStreamMach,
           freeStreamPressure,
           dt,
         );
@@ -531,7 +535,7 @@ export function createAssembly(
       const f = total.force;
       totals.alpha = flow.alpha;
       totals.beta = flow.beta;
-      totals.mach = machNumber(speed, atmosphere.speedOfSound);
+      totals.mach = freeStreamMach;
       totals.dynamicPressure = freeStreamPressure;
       totals.trueAirspeed = speed;
       totals.drag = -(f.x * ca * cb + f.y * sb + f.z * sa * cb);

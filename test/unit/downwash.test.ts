@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 import { Vector3 } from 'three';
 
 import { DEG } from '@/math/units';
+import { isa } from '@/physics/atmosphere';
 import { clearWrench, createState, createWrench } from '@/physics/rigidbody';
 import type { Wrench } from '@/physics/rigidbody';
 import type { AeroAssembly } from '@/physics/aero/assembly';
@@ -32,6 +33,16 @@ const FIN_FIRST = 20;
 /** Free stream dynamic pressure at the test speed, at sea level. */
 const SPEED = 120; // m/s
 const STEP = 1 / 240; // s
+
+/**
+ * The free stream Mach number of every test in this file, at sea level.
+ *
+ * It sits far below the drag rise on purpose. Both transonic laws of section 5
+ * of the module are exactly neutral there, so every number below is the number
+ * the model gave before bead b73 added them. The transonic block at the end of
+ * this file is the one that measures the two laws.
+ */
+const TEST_MACH = SPEED / 340.294; // 0.353
 
 /**
  * Turns the whole model off, in place.
@@ -199,11 +210,11 @@ describe('the downwash angle at the tail', () => {
 
   it('gives zero downwash at zero wing lift', () => {
     const d = createDownwash(downwashParams(aircraft().surfaces, aircraft().groups));
-    updateDownwash(d, 0, 1, 4 * DEG, 0, SPEED, 8820, STEP);
+    updateDownwash(d, 0, 1, 4 * DEG, 0, SPEED, TEST_MACH, 8820, STEP);
     expect(d.state.epsilon).toBe(0);
     // A tail that meets no downwash and no pressure loss gains no angle either.
     turnOffPressureLoss(d);
-    updateDownwash(d, 0, 1, 4 * DEG, 0, SPEED, 8820, STEP);
+    updateDownwash(d, 0, 1, 4 * DEG, 0, SPEED, TEST_MACH, 8820, STEP);
     expect(d.state.epsilon).toBe(0);
     expect(d.state.etaTail).toBe(1);
   });
@@ -423,6 +434,95 @@ describe('the sidewash at the fin', () => {
   });
 });
 
+describe('the wake through the drag rise, bead b73', () => {
+  /** The model on its own, driven at one Mach number with a fixed wing lift. */
+  function atMach(mach: number): Downwash {
+    const assembly = aircraft();
+    const d = createDownwash(downwashParams(assembly.surfaces, assembly.groups));
+    updateDownwash(d, 40000, 1, 2 * DEG, 0, SPEED, mach, 8820, STEP);
+    return d;
+  }
+
+  it('leaves the downwash and the tail pressure untouched below the drag rise', () => {
+    // Both laws are exactly neutral to CRITICAL_MACH of compressibility.ts, so
+    // no number the model gave before bead b73 moves by one count.
+    for (const mach of [0.2, 0.5, 0.7, 0.78]) {
+      const d = atMach(mach);
+      expect(d.state.wakeScale).toBeCloseTo(1, 12);
+      expect(d.state.etaTail).toBeCloseTo(0.92, 12);
+    }
+    expect(atMach(0.3).state.epsilon).toBeCloseTo(atMach(0.78).state.epsilon, 12);
+  });
+
+  it('takes the turning power of the wake away above the drag rise', () => {
+    // The shock stands at the ROOT of a swept wing first, and the tail sits
+    // behind the root, so the downwash at the tail falls faster than the lift of
+    // the whole wing falls. The wake keeps 0.40 of its low speed value at the
+    // Mach limit. The anchors of the table are free stream values at the
+    // reference sweep AND at the reference thickness, exactly as every anchor of
+    // compressibility.ts is. The innermost strip of this wing is 10.8 percent
+    // thick against the 11 percent reference, so it meets its shock a little
+    // later and reads 0.435 where the anchor says 0.40.
+    const low = atMach(0.78);
+    const limit = atMach(0.86);
+    expect(limit.state.wakeScale).toBeLessThan(low.state.wakeScale);
+    expect(limit.state.wakeScale).toBeCloseTo(0.435, 2);
+    // The downwash follows it, at the same wing lift.
+    expect(limit.state.epsilon).toBeCloseTo(0.435 * low.state.epsilon, 3);
+    // It never turns into an upwash, and it never runs away.
+    for (let mach = 0.78; mach <= 1.2; mach += 0.01) {
+      const d = atMach(mach);
+      expect(d.state.wakeScale).toBeGreaterThan(0.25);
+      expect(d.state.wakeScale).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it('takes the tail dynamic pressure down with the wave drag of the wing', () => {
+    // A wake is a momentum deficit and the deficit is the drag, so the loss
+    // grows with the square root of the drag coefficient. The tail keeps 0.920
+    // of the free stream below the drag rise and 0.817 of it at the Mach limit.
+    const low = atMach(0.78);
+    const limit = atMach(0.86);
+    expect(low.state.etaTail).toBeCloseTo(0.92, 6);
+    expect(limit.state.etaTail).toBeLessThan(low.state.etaTail);
+    expect(limit.state.etaTail).toBeCloseTo(0.817, 2);
+    // The floor holds the law where the wake model stops meaning anything. This
+    // aircraft cannot reach that Mach number.
+    for (let mach = 0.78; mach <= 1.4; mach += 0.01) {
+      expect(atMach(mach).state.etaTail).toBeGreaterThanOrEqual(0.6 - 1e-12);
+    }
+  });
+
+  it('moves the downwash slope of the whole aircraft from 0.56 to 0.25', () => {
+    // THIS IS THE MEASUREMENT BEAD b73 WAS OPENED FOR. It read 0.550 rising to
+    // 0.555 over the same range, which is the wrong direction, so the model
+    // built the whole of its Mach tuck out of the section shift on the wing.
+    // The sweep runs at 8000 m, where the aircraft can really reach Mach 0.86.
+    const assembly = aircraft();
+    const controls = new Float64Array(CONTROL_COUNT);
+    const air = isa(8000);
+
+    function slope(mach: number): number {
+      const step = 0.5 * DEG;
+      const read: number[] = [];
+      for (const alpha of [2 * DEG - step, 2 * DEG + step]) {
+        const state = createState();
+        state.position.set(0, 0, -8000);
+        const v = mach * air.speedOfSound;
+        state.velocity.set(v * Math.cos(alpha), 0, v * Math.sin(alpha));
+        clearWrench(wrench);
+        assembly.evaluate(state, wind, controls, Number.POSITIVE_INFINITY, wrench);
+        read.push(assembly.downwash.state.epsilon);
+      }
+      return (read[1] - read[0]) / (2 * step);
+    }
+
+    expect(slope(0.78)).toBeCloseTo(0.562, 2);
+    expect(slope(0.86)).toBeCloseTo(0.249, 2);
+    expect(slope(0.86)).toBeLessThan(0.5 * slope(0.78));
+  });
+});
+
 describe('the model itself', () => {
   it('finds the wing, the tail and the fin out of the geometry alone', () => {
     const assembly = aircraft();
@@ -443,7 +543,7 @@ describe('the model itself', () => {
     const d = createDownwash(params);
     const angles = new Float64Array(assembly.surfaces.length);
     angles.fill(0.05);
-    updateDownwash(d, 20000, 1, 4 * DEG, 0, SPEED, 8820, STEP);
+    updateDownwash(d, 20000, 1, 4 * DEG, 0, SPEED, TEST_MACH, 8820, STEP);
     expect(d.state.epsilon).toBeGreaterThan(0);
     // The angles of the strips never move, because there is nothing to move.
     for (let i = 0; i < angles.length; i++) {
@@ -458,18 +558,18 @@ describe('the model itself', () => {
     const assembly = aircraft();
     const d = createDownwash(downwashParams(assembly.surfaces, assembly.groups));
     expect(d.params.useLag).toBe(false);
-    updateDownwash(d, 40000, 1, 4 * DEG, 0, SPEED, 8820, STEP);
+    updateDownwash(d, 40000, 1, 4 * DEG, 0, SPEED, TEST_MACH, 8820, STEP);
     const steady = d.state.epsilon;
 
     const lagged = createDownwash({
       ...downwashParams(assembly.surfaces, assembly.groups),
       useLag: true,
     });
-    updateDownwash(lagged, 40000, 1, 4 * DEG, 0, SPEED, 8820, STEP);
+    updateDownwash(lagged, 40000, 1, 4 * DEG, 0, SPEED, TEST_MACH, 8820, STEP);
     expect(lagged.state.epsilon).toBeGreaterThan(0);
     expect(lagged.state.epsilon).toBeLessThan(steady);
     for (let i = 0; i < 200; i++) {
-      updateDownwash(lagged, 40000, 1, 4 * DEG, 0, SPEED, 8820, STEP);
+      updateDownwash(lagged, 40000, 1, 4 * DEG, 0, SPEED, TEST_MACH, 8820, STEP);
     }
     expect(lagged.state.epsilon).toBeCloseTo(steady, 6);
   });

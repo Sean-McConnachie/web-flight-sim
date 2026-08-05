@@ -1,28 +1,39 @@
 # henri-flight-sim
 
-A flight simulator of the Messerschmitt Me-262 A-1a. The flight model builds the
-total force and moment from separate components, such as each lifting surface
-and each engine. The physics runs at a fixed step and holds no browser code. The
-same model therefore runs in the browser and in a Node test harness.
+A flight simulator of the Messerschmitt Me-262 A-1a, in TypeScript, in the
+browser.
+
+The flight model builds the total force and moment from separate parts. It sums
+twenty two lifting strips, three bodies, two engines, three landing gear legs
+and seven airframe contact points. It carries no table of aircraft level
+coefficients. The roll damping, the dihedral effect, the asymmetric stall, the
+Mach tuck and the fuel consumption all come OUT of the model. They go into the
+tests as measurements.
+
+The physics runs at a fixed 240 Hz step and holds no browser code. The same
+model therefore runs in the browser and in a Node test harness. 26 flight tests
+hold 31 measurements against published data and against the class bands of a
+fighter of the period.
 
 ## Run it
 
 ```sh
-npm install        # install the dependencies, once
-npm run dev        # start the Vite dev server
-npm run test:unit  # run the unit tests
-npm run test:flight  # run the flight tests against the validation targets
-npm run lint:ste   # check the prose of every document
+npm install          # install the dependencies, once
+npm run dev          # start the Vite dev server on port 5173
+npm run test:unit    # 846 unit tests
+npm run test:flight  # 26 flight tests, 31 measurements
+npm run typecheck    # the TypeScript compiler, no emit
+npm run lint:ste     # check the prose of every document
 ```
 
-`npm run typecheck` runs the TypeScript compiler with no emit. `npm run build`
-runs the type check and then builds the bundle.
+`npm run build` runs the type check and then builds the bundle.
 
 ## Running on a hybrid graphics laptop
 
 A laptop with two GPUs can give Chrome one device for the shared images and the
-other device for the import. The page then shows nothing. Start Chrome with all
-of the work on one device:
+other device for the import. Chrome then reports `VK_ERROR_OUT_OF_DEVICE_MEMORY`
+and the page shows nothing. That is not a memory fault. Start Chrome with all of
+the work on one device:
 
 ```sh
 __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia \
@@ -30,36 +41,87 @@ google-chrome --use-angle=vulkan --enable-features=Vulkan \
   --enable-unsafe-webgpu --disable-accelerated-2d-canvas http://localhost:5173/
 ```
 
-`--disable-accelerated-2d-canvas` is part of the same fix. Without it the 2D
-canvas draws nothing on this path, and the runway markings do not appear.
+`--disable-accelerated-2d-canvas` is part of the same fix. Without it the GPU 2D
+canvas returns transparent pixels on this path. Every canvas texture then comes
+out blank and the runway markings do not appear.
+
+Use HEADED Chrome for the WebGPU path. Headless Chrome quietly drops to the
+WebGL2 backend, so check the backend before you trust a screenshot.
+`docs/CONVENTIONS.md` section 6a lists the rest of the platform faults.
+
+## Controls, in brief
+
+| Action | Keyboard | Gamepad |
+| --- | --- | --- |
+| Roll and pitch | A, D, W, S | left stick |
+| Rudder | Q and E | the two triggers, as a difference |
+| Throttle | Page Up and Page Down | D-pad up and down |
+| Landing gear | G | A |
+| Flaps down and up | F and Shift F | D-pad right and left |
+| Brakes, both | B | B |
+| Brakes, left and right | Z and C | left and right trigger, at taxi |
+| Start the engines | Home, held | left bumper, held |
+| Fire the cannon | Space | right bumper |
+| Change the view | V | Y |
+| Look around | the mouse, left button held | right stick |
+| Respawn | R | |
+| Debug level | F3 | |
+
+The throttle is a RATE and not a position. A full sweep takes 2 seconds.
+
+**The engine needs slow throttle work below 6000 rpm.** A slam at idle asks for
+three times the fuel to air ratio the compressor can take, and the engine
+surges, bangs and flames out. The same slam at 7000 rpm is safe. That is the
+real aircraft and the model reproduces it rather than forbidding it.
+
+`docs/controls.md` gives the full map, the response curves and the control
+authority law.
 
 ## Coordinate frames
 
-- Body frame: `+x` forward out of the nose, `+y` right, `+z` down. Positive lift
-  is a negative z force.
-- World frame: North-East-Down, with the origin at the runway threshold.
-  Altitude above the ground is `-position.z`.
-- Render frame: Three.js Y up. Only `src/render/frames.ts` converts between the
-  world frame and the render frame.
+- **Body frame.** `+x` forward out of the nose, `+y` right, `+z` down. Positive
+lift is a NEGATIVE z force.
+- **World frame.** North-East-Down, with the origin at the runway threshold.
+Altitude above the ground is `-position.z`.
+- **Render frame.** Three.js Y up. Only `src/render/frames.ts` converts between
+the world frame and the render frame.
 
-## Documents
+## Where to read next
 
 | Document | Content |
 | --- | --- |
 | `docs/CONVENTIONS.md` | the binding rules for all code and all prose |
-| `docs/architecture.md` | module layers and the main loop |
-| `docs/flight-model.md` | forces, moments, and the aerodynamic model |
+| `docs/architecture.md` | module layers, the fixed step loop, the frames |
+| `docs/flight-model.md` | forces, moments, and the aerodynamic method |
 | `docs/aircraft-me262.md` | every aircraft number, with its confidence mark |
 | `docs/engine-jumo004.md` | the turbojet model and its limits |
 | `docs/controls.md` | input devices, axis map, and key bindings |
 | `docs/validation.md` | flight test targets and measured results |
 
-Read `docs/CONVENTIONS.md` before you write any code or any prose in this
-repository. It fixes the units, the coordinate frames, the module separation
-rule, and the writing style. The `lint:ste` script checks the writing style of
-every Markdown file in `docs/` and of this file.
+**Read `docs/CONVENTIONS.md` before you write any code or any prose here.** It
+fixes the units, the coordinate frames, the module separation rule and the
+writing style. All prose in this repository uses ASD-STE100 Simplified Technical
+English, and `npm run lint:ste` checks it.
+
+To read the CODE, use the reading order near the end of `docs/architecture.md`.
+
+A "bead" is an issue in the `bd` tracker of this repository. Run `bd show <id>`
+to read one. The table below gives the id of each open one.
 
 ## Status
 
-Early. The documents under `docs/` are skeletons, and the flight test targets in
-`docs/validation.md` all read "not measured".
+The model holds all 31 of its measurements. Work remains. Five tracked issues
+stay open, and three further gaps carry no issue yet. Each one appears as a
+known gap in the document that owns it, in plain language, with the measurement
+behind it.
+
+| Gap | Tracked as | Where it is written up |
+| --- | --- | --- |
+| The inboard slat panel is missing and the sources disagree | b74 | `docs/flight-model.md` |
+| A body pays the wave drag of a wing | 7el | `docs/flight-model.md` |
+| The tire friction has no speed term | fw3 | `docs/flight-model.md` |
+| The maximum speed gains too little with altitude | ole | `docs/validation.md` |
+| The control authority law does not cap a held stick | 4rq | `docs/controls.md` |
+| The Mach tuck still leans on the wing section shift | none | `docs/flight-model.md` |
+| The trim keys do nothing, because there is no trim channel | none | `docs/controls.md` |
+| There is no shutdown path and nothing calls dispose | none | `docs/architecture.md` |

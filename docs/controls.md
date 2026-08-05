@@ -1,30 +1,314 @@
 # Controls
 
-This document will describe how the simulator turns pilot input into control
-surface deflection and engine command. It will list every input device, every
-axis, and every key binding. It will state the shape of each curve that maps a
-raw axis to a command. It will also describe the trim system and the camera
-controls. The physics of the control surfaces belongs in `docs/flight-model.md`,
-not here.
+This document describes how the simulator turns pilot input into a control
+surface deflection and an engine command. It lists every input device, every
+axis and every key binding. It states the shape of each curve that maps a raw
+axis to a command. The physics of the control surfaces belongs in
+`docs/flight-model.md` and not here.
+
+`src/input/bindings.ts` holds the whole map. It is the only file that joins a
+piece of hardware to an action.
 
 ## Input devices
 
+Two devices, and the simulator accepts both at the same time.
+
+- **A gamepad with the standard mapping.** The text below names the buttons the
+way an Xbox controller labels them. `src/input/gamepad.ts` also handles the
+older layout that Firefox on Linux reports. In that layout the triggers arrive
+as axes 2 and 5 rather than as buttons 6 and 7.
+- **The keyboard.** `src/input/keyboard.ts` reads `KeyboardEvent.code`, which is
+the physical key. The map therefore works on a keyboard of any layout.
+
+The input system reports which device the pilot last used, as `activeDevice`. A
+gamepad axis must pass 0.25, or a bound gamepad button must go down, before the
+pad counts as active. Any bound key counts at once. If both move in the same
+poll, the keyboard wins.
+
+The keyboard reader drops the automatic repeat of the operating system, so a
+held key raises one press edge and not twenty. It also releases every held key
+when the window loses focus. Without that rule a pilot who changed windows in a
+turn would come back to full aileron.
+
 ## Axis map
+
+The gamepad map:
+
+| Control | Action | Sense |
+| --- | --- | --- |
+| Left stick, sideways | roll | right is positive |
+| Left stick, fore and aft | pitch | back is positive, which raises the nose |
+| Right stick | look | it moves the head, not the aircraft |
+| Right trigger | yaw and the right brake | |
+| Left trigger | yaw the other way, and the left brake | |
+| D-pad up and down | throttle, as a rate | |
+| D-pad left and right | flaps up and flaps down | |
+| A | landing gear | |
+| B | both brakes | |
+| Y | change the view | |
+| Left bumper | engine start, held | |
+| Right bumper | fire the cannon, held | |
+| Start | menu | |
+
+The X button, the back button and both stick buttons carry no action. They stay
+free for later work.
+
+The rudder is the DIFFERENCE of the two triggers. The right trigger yaws right
+and the left trigger yaws left, so a pilot who pulls both gets no rudder and two
+brakes. That is the same thing a pair of real rudder pedals with toe brakes
+gives.
 
 ## Key bindings
 
+| Key | Action |
+| --- | --- |
+| A and D | roll left and roll right |
+| W and S | nose down and nose up |
+| Q and E | rudder left and rudder right |
+| Page Up and Page Down | throttle up and throttle down |
+| Shift and equal, Shift and minus | throttle up and throttle down |
+| Z | left brake |
+| C | right brake |
+| B | both brakes |
+| G | landing gear |
+| F | flaps one step down |
+| Shift and F | flaps one step up |
+| V | change the view |
+| Home | engine start, held |
+| Space | fire the cannon, held |
+| Escape | menu |
+| R | respawn on the runway |
+| F2 | the developer free camera |
+| F3 | the debug level |
+| Left and right square bracket | trim down and trim up |
+
+Any key that a shifted binding claims goes dead while a Shift key is down. That
+is why `F` lowers the flaps and `Shift F` raises them, with no risk of both.
+
+R and F2 are the only two keys above that `src/input/bindings.ts` does NOT hold.
+`src/main.ts` listens for those two directly.
+
 ## Response curves and dead zones
+
+A gamepad stick pair takes a RADIAL dead zone. The reader takes the length of
+the pair, removes the dead zone from that length, and rescales what is left. A
+per axis dead zone would leave a square hole around the center. A stick pushed
+to a corner would then answer differently from a stick pushed straight. The dead
+zone is 0.06 of full travel.
+
+Both sticks and both triggers then take the same shaping curve:
+
+```
+output = sign(x) * (expo * |x|^3 + (1 - expo) * |x|)
+```
+
+`expo` is 0.4. The curve passes through the origin, it reaches exactly 1 at full
+travel for any value of `expo`, and it is smooth at the center. It gives fine
+control near neutral and full authority at the stop.
+
+A trigger takes a plain dead zone on its 0 to 1 range and then the same curve.
+
+**A key gives full deflection at once.** There is no ramp and no self centering
+on the roll, pitch and yaw keys. A press adds the whole 1 and a release removes
+it in the same poll. This is a real difference between the two devices and a
+pilot on the keyboard should know it.
+
+The throttle is the one input with memory. Every throttle binding is a RATE and
+not a position. The binding table clamps the summed rate to plus or minus 1. The
+lever then moves at 0.5 per second, so a full sweep from closed to open takes 2
+seconds. The lever holds its value between polls and clamps to the 0 to 1 range.
 
 ## Control surface travel limits
 
+`src/aircraft/aircraft.ts` turns a command of plus or minus 1 into a deflection:
+
+| Surface | Full travel |
+| --- | --- |
+| Aileron | 0.35 rad, that is 20.1 degrees |
+| Elevator | 0.44 rad, that is 25.2 degrees |
+| Rudder | 0.44 rad, that is 25.2 degrees |
+
+The flap and the slat are not pilot commands in this sense. The systems model of
+`src/aircraft/me262/systems.ts` drives both, and it takes time to move them.
+
+## The control authority law
+
+The Me-262 has no powered controls. The stick force of an unboosted control
+grows with the dynamic pressure. A pilot at 800 km/h therefore cannot pull the
+stick as far back as the same pilot at 300 km/h. A key press or a stick pushed
+to its stop carries no force at all, so the simulator has to supply that limit
+itself.
+
+`controlAuthority` is the law:
+
+```
+authority = 1                       at or below 10 kPa
+authority = 10 kPa / q              above it, with a floor of 0.15
+```
+
+10 kPa is about 456 km/h of equivalent airspeed. The floor of 0.15 arrives at 67
+kPa, which is about 1180 km/h. The aircraft cannot reach that speed, so the
+floor never acts in flight. It exists so that a fault in the caller cannot take
+the controls away.
+
+The law scales exactly three fields, after the clamp: `roll`, `pitch` and `yaw`.
+It does not scale the look axes, the throttle, either brake, or any boolean.
+
+**THIS IS AN INPUT LIMIT AND NOT A FLIGHT MODEL LIMIT.** It says how far the
+pilot can move the stick. It says nothing about what the surface does when it
+gets there. The trim solver of `src/aircraft/trim.ts` and every flight test in
+`test/flight/` command the surfaces directly, and none of them imports the input
+layer. A deflection that the flight model receives from a test is the deflection
+the model applies.
+
+Two measurements say what the law fixed and what it did not fix. A snatch to
+full stick at 3000 m and Mach 0.75 reached 12.33 g after a quarter of a second
+before the law. With the law it reached 8.87 g. The peak over a three second
+pull was 13.74 g before and 13.02 g with it. So the law removes the STEP that a
+key press used to make. It does not cap a pilot who holds the stick back. See
+the known gaps below.
+
 ## Trim
+
+The two square bracket keys produce a `trimUp` and a `trimDown` command, and the
+reader treats both as held rather than edge triggered.
+
+**Nothing consumes them.** The aircraft has no stabilizer trim channel, and
+`AircraftInput` carries no trim field. The two keys do nothing today. Do not
+confuse them with `src/aircraft/trim.ts`, which is an offline solver that finds
+a trimmed flight condition for the tests. That solver has no pilot interface.
+
+This is a gap, and the list below holds it.
 
 ## Flaps, gear, and brakes
 
+The gear command is a toggle on an edge. The systems model then runs the gear
+through its travel time.
+
+The flap steps one detent per edge through `up`, `takeoff` and `landing`. The
+index clamps at both ends, so a pilot who presses F four times ends at `landing`
+and not back at `up`.
+
+**The differential brake rule.** Two paths reach the brakes and the larger of
+the two wins.
+
+1. **The trigger path takes a gate.** The left trigger drives the left brake,
+and the right trigger drives the right brake, with the full analog range. Both
+work only while the aircraft is ON THE GROUND and the throttle is at or below
+0.05.
+2. **The button path takes no gate.** B and the gamepad B button apply both
+brakes at full. Z applies the left brake and C applies the right brake. These
+work at any speed and at any throttle setting.
+
+The reason for the gate on the triggers is the same trigger pair driving the
+rudder. At idle on the ground the rudder has almost no air over it, so a trigger
+that also brakes costs nothing. The moment the throttle passes idle, the brakes
+close and the triggers steer with rudder alone. A brake that stayed live in the
+takeoff roll would drag one wheel at full power.
+
+The Z and the C keys carry no gate, because a key that does nothing else cannot
+fight the rudder. A pilot on the keyboard therefore keeps differential braking
+through the whole landing roll.
+
+The yaw command also steers the nose wheel, to a maximum of 30 degrees.
+
+Downstream, `src/physics/gear.ts` takes the RAW brake command. Each main wheel
+carries 4200 N m of brake torque at full command, and the nose wheel has no
+brake. The brake pack heats up, and it fades by half between 475 K and 675 K.
+See `docs/flight-model.md` for the tire and the brake.
+
 ## Throttle handling rules
+
+The input layer enforces four rules.
+
+1. Every throttle binding is a rate. There is no absolute throttle axis.
+2. The summed rate clamps to plus or minus 1, so two throttle sources held at
+once do not double the sweep speed.
+3. The lever moves at 0.5 per second and clamps to the 0 to 1 range.
+4. The control authority law does not touch the throttle.
+
+The sweep time of 2 seconds shapes the DEVICE and not the engine. The Jumo 004
+takes 8 to 10 seconds to spool from idle to full power. It surges if the pilot
+opens the lever too fast below 6000 rpm. Both of those live in
+`src/aircraft/me262/engine.ts`, and `docs/engine-jumo004.md` describes them. The
+input rate exists so that the engine punishes a pilot who slams the lever,
+without punishing a pilot who holds a digital button down.
 
 ## Camera and view controls
 
+V on the keyboard, or Y on the gamepad, steps through four views: cockpit,
+chase, orbit and flyby. The simulator starts in chase.
+
+The right stick moves the view. In the cockpit, the chase and the flyby views it
+is an absolute head position. The limits are 2.4 rad of yaw and 1.2 rad of
+pitch, with a short smoothing time. In the orbit view it is a rate instead, at
+1.6 rad per second in yaw and 1 rad per second in pitch.
+
+The mouse works through `src/render/cameras.ts` and not through the binding
+table, because a mouse reports movement and not position. Hold the left button
+to look around. The offset returns to center about half a second after the
+button comes up, except in the orbit view, where it stays. The wheel zooms the
+orbit view between 8 m and 400 m, and it starts at 40 m.
+
+F2 turns on a developer free camera. While it is on, W, A, S, D, Q and E fly the
+camera and a Shift key makes it eight times faster.
+
+F3 steps the debug level through three settings: nothing, the overlay and the
+telemetry graph, and then the force arrows as well.
+
 ## Input to command pipeline
 
-## Open questions
+```
+gamepad and keyboard readers
+  -> dead zone and expo, per device
+     -> the binding table sums every source into one action
+        -> throttle rate integration, held between polls
+        -> controlAuthority scales roll, pitch and yaw
+        -> the taxi gate decides the two brake commands
+           -> ControlInput
+              -> AircraftInput, a subset with the same field names
+                 -> control deflections, in radians
+```
+
+`ControlInput` carries 8 numbers and 10 booleans. The axes run from -1 to 1,
+apart from the throttle and the two brakes, which run from 0 to 1. Positive
+pitch raises the nose, positive roll rolls right, and positive yaw moves the
+nose right.
+
+`AircraftInput` is a strict subset of `ControlInput`, field for field, so
+`src/main.ts` passes one straight in as the other with no conversion. The eight
+fields the aircraft does not read go to the camera rig, the debug level and the
+guns. Three of those eight fields go to nothing at all.
+
+## Known gaps
+
+**The control authority law does not cap a pilot who holds the stick.** It
+removes the step that a key press makes and nothing more. Tracked as bead 4rq. A
+held command sweep at 3000 m measures the peak load factor of a three second
+pull:
+
+| Speed | Dynamic pressure | The command that reaches the limit |
+| --- | --- | --- |
+| 400 km/h | 5612 Pa | full command peaks at 3.09 g |
+| 500 km/h | 8769 Pa | full command peaks at 4.96 g |
+| 600 km/h | 12627 Pa | 0.30 of the command peaks at 6.85 g |
+| 700 km/h | 17186 Pa | 0.05 of the command peaks at 6.03 g |
+| 800 km/h and above | above 22 kPa | no command above zero stays under 7 g |
+
+Five percent of the elevator is 1.3 degrees, and at 700 km/h that gives 6 g. No
+bound on the deflection can do both jobs. It cannot leave the pilot able to
+maneuver at 500 km/h and also hold the aircraft inside the envelope at 800 km/h.
+The classic result says that the elevator angle per g is nearly independent of
+speed for a rigid stable aircraft. This model gives an angle per g that falls
+much faster. The fault is therefore more likely to sit in the pitch damping, the
+elevator power, or the damping of the short period. It is less likely to sit in
+the input layer. This is not a display fault. The head up display already warns
+at the live limit and the structure model already breaks the aircraft.
+
+**The two trim keys do nothing.** The aircraft has no stabilizer trim channel. A
+Me-262 pilot trimmed with a moving tailplane, and that channel is the one the
+Mach recovery of `docs/validation.md` needs. The flight test stands in for it
+with a steady elevator command.
+
+**The menu command has no consumer.** Escape and the Start button both raise
+`toggleMenu`, and no code reads it. There is no menu.

@@ -11,9 +11,16 @@
  *   clScale      Prandtl-Glauert lift growth below the critical Mach number, and
  *                the fall of the lift curve slope above it.
  *   cdAdd        Wave drag rise above the critical Mach number.
- *   acShift      The center of pressure moves back. This is the Mach tuck.
+ *   acShift      The center of pressure moves back. This is most of the Mach tuck.
  *   controlScale The control surfaces lose authority.
  *   clMaxScale   Shock induced separation takes the peak lift away.
+ *
+ * THE TUCK DOES NOT LIVE IN THIS FILE ALONE. Every text gives it two causes, and
+ * the second one is the fall of the downwash at the tail. Section 5 of
+ * src/physics/aero/downwash.ts holds that half, together with the fall of the
+ * tail dynamic pressure through the drag rise. Bead b73 added both and refitted
+ * AC_SHIFT_X down against them. Read the comment on that table before you change
+ * either file, because the two now share one measured total.
  *
  * WHAT BEAD b58 CHANGED, AND WHY THE MODEL HAD NO TUCK BEFORE IT. Two of the
  * five effects were wrong in a way that hid the third.
@@ -204,19 +211,59 @@ export const WAVE_DRAG_CD: readonly number[] = [
   0.0, 0.0024, 0.0096, 0.029, 0.067, 0.128, 0.256, 0.384,
 ];
 
-// Aerodynamic center of the section, in chord fractions from the leading edge,
-// against the free stream Mach number at the reference sweep. THIS TABLE IS THE
-// MACH TUCK. Nothing else in the model makes one.
+// Aerodynamic center of the WING, in chord fractions from the leading edge,
+// against the free stream Mach number at the reference sweep. This table carries
+// most of the Mach tuck. src/physics/aero/downwash.ts carries the rest.
 //
-// The mechanism. Below the critical Mach number the load of a thin section sits
-// at the quarter chord. A shock then stands on the upper surface, and the whole
-// of the extra suction it holds sits BEHIND it. The load moves aft with the
-// shock, and the shock walks toward the trailing edge as the Mach number rises.
-// A section that carries its load at half chord instead of quarter chord has
-// moved its aerodynamic center a quarter of a chord aft. On the 1.82 m mean
-// aerodynamic chord of this wing that is 0.45 m, against a static margin of
-// 0.05 chord, which is 0.09 m. The aircraft therefore goes from just stable to
-// very stable, and a very stable aircraft in a dive holds the nose DOWN.
+// READ THE NAME. This is the aerodynamic center of a SWEPT WING and it is NOT a
+// section measurement. Two separate effects live in it, and they are the same
+// size. See the two blocks below.
+//
+//
+// EFFECT ONE, THE SECTION. Below the critical Mach number the load of a thin
+// section sits at the quarter chord. A shock then stands on the upper surface,
+// and the whole of the extra suction it holds sits BEHIND it. The load moves aft
+// with the shock, and the shock walks toward the trailing edge as the Mach
+// number rises.
+//
+// HOW FAR THE REAL SECTION GOES, MEASURED. NACA TN 3501, Nelson and McDevitt,
+// June 1955, tested 22 rectangular NACA 63A0XX wings on the Ames transonic bump
+// from Mach 0.40 to 1.10. Its figure 16 gives dCm/dCL about the quarter chord,
+// so the aerodynamic center sits at 0.25 - dCm/dCL. For the aspect ratio 6 wing
+// with the 10 percent section, which is the closest model in the report to this
+// wing:
+//
+//   Mach 0.40 to 0.80   dCm/dCL near +0.01, so the center sits at 0.24 c
+//   Mach 0.85           dCm/dCL near -0.07, so the center sits at 0.32 c
+//   Mach 0.90           dCm/dCL near +0.22, a MOMENT REVERSAL, center at 0.03 c
+//   Mach 0.95 to 1.10   dCm/dCL near -0.14, so the center sits at 0.39 c
+//
+// So the section travels 0.07 chord by Mach 0.85 and 0.14 chord above Mach 0.95,
+// and on the way it swings sharply FORWARD near Mach 0.90. TN 3501 tested
+// UNSWEPT wings, so its Mach number is a NORMAL Mach number. At a free stream
+// Mach of 0.86 this wing leaves a normal Mach of 0.828, where TN 3501 reads
+// almost no travel at all. The section alone therefore accounts for a small part
+// of the table below and no more.
+//
+//
+// EFFECT TWO, THE SPAN LOADING OF A SWEPT WING. This is the part TN 3501 cannot
+// show, because a rectangular unswept wing has no aft displacement to gain.
+//
+// On a swept wing the shock forms at the ROOT first. The root then sheds its
+// load and the load moves OUTBOARD, and on a swept wing outboard is AFT. The
+// quarter chord line of this wing runs aft at tan(15.72 deg) = 0.2814, and the
+// semi span is 6.255 m, so a load centroid that moves one tenth of the semi span
+// outboard moves 0.176 m aft. On the 1.820 m mean aerodynamic chord that is
+// 0.097 chord, which is larger than the whole of the section travel TN 3501
+// measures. A tenth of the semi span is a small movement for a wing whose root
+// is losing its load to a shock.
+//
+// The two effects add to about 0.17 chord at the Mach limit, which is the value
+// the table carries. Neither one alone reaches it.
+// Source: NACA TN 3501 for the section, and the standard transonic behavior of a
+// swept wing for the span loading. Confidence: firm for the section, estimate
+// for the span loading term, anchored on the firm tuck onset Mach number.
+//
 //
 // WHERE THE SHIFT STARTS. It starts at CRITICAL_MACH, because that is where the
 // shock appears. It does not start at TUCK_ONSET_MACH: the published onset is
@@ -225,85 +272,64 @@ export const WAVE_DRAG_CD: readonly number[] = [
 //
 // WHERE THE SHIFT STOPS. At half chord. A section in fully supersonic flow
 // carries its load at mid chord, and no section carries it behind that point, so
-// the table holds 0.5 from Mach 0.85 upward and never goes past it.
+// the table reaches 0.5 at Mach 1 and never goes past it.
 //
 // Anchor by anchor. The value stays at the quarter chord to 0.78, runs aft as
-// the shock strengthens, and reaches half chord at 0.85. What that gives on the
-// whole aircraft: the neutral point moves 0.17 of the mean aerodynamic chord aft
-// between Mach 0.78 and Mach 0.86, which takes the static margin from 0.05 to
-// 0.22. Published transonic neutral point travel for a swept wing aircraft runs
-// 0.15 to 0.25 chord, so the model sits inside that band. The measured onset on
-// the whole aircraft is Mach 0.825, against the documented 0.83.
-// Source: the transonic aerodynamic center travel of measured swept wing
-// aircraft, and supersonic thin airfoil theory for the mid chord limit.
-// Confidence: estimate, anchored on the firm onset Mach number.
+// the shock strengthens, reaches 0.425 at the Mach limit, and goes on to the mid
+// chord wall at Mach 1. The travel between the drag rise and the Mach limit is
+// therefore 0.175 chord.
 //
 //
-// THIS TABLE IS AN AIRCRAFT LEVEL LUMPED PARAMETER. IT IS NOT A SECTION
-// MEASUREMENT, AND NO MEASURED SECTION MOVES THIS FAR. READ BEAD b66.
+// WHAT BEAD b73 CHANGED, AND WHY THE OLD TABLE WAS WRONG EVEN THOUGH ITS TOTAL
+// WAS RIGHT.
 //
-// What the measured section does. NACA TN 3501, Nelson and McDevitt, June 1955,
-// tested 22 rectangular NACA 63A0XX wings on the Ames transonic bump from Mach
-// 0.40 to 1.10. Its figure 16 gives dCm/dCL about the quarter chord, so the
-// aerodynamic center sits at 0.25 - dCm/dCL. For the aspect ratio 6 wing with
-// the 10 percent section, which is the closest model in the report to this wing:
+// The table ran from 0.25 to 0.50 and reached the mid chord wall at Mach 0.85.
+// The whole aircraft answer was right: bead b66 measured the neutral point
+// moving 0.242 of the mean aerodynamic chord between Mach 0.78 and Mach 0.86 at
+// 8000 m, which is inside the published 0.15 to 0.25 chord band for a swept wing
+// aircraft, and test/flight/mach.test.ts measured the tuck onset at Mach 0.825
+// against the documented 0.83.
 //
-//   Mach 0.40 to 0.80   dCm/dCL near +0.01, so the center sits at 0.24 c
-//   Mach 0.85           dCm/dCL near -0.07, so the center sits at 0.32 c
-//   Mach 0.90           dCm/dCL near +0.22, a MOMENT REVERSAL, center at 0.03 c
-//   Mach 0.95 to 1.10   dCm/dCL near -0.14, so the center sits at 0.39 c
+// THE PARTS WERE WRONG. Measured over the same range, by flattening this table
+// to 0.25 on one group of strips at a time:
 //
-// So the real section travels about 0.07 chord by Mach 0.85, it never reaches
-// half chord anywhere in the tested range, and on the way it swings sharply
-// FORWARD near Mach 0.90. This table asks for 0.25 chord of travel by Mach 0.85,
-// monotone aft. The comparison is worse than the ratio of 3.6 those two numbers
-// give, because TN 3501 tested an UNSWEPT wing, so its Mach number is a normal
-// Mach number. At a free stream Mach of 0.85 the sweep of this wing leaves a
-// normal Mach of 0.818, and TN 3501 reads no section travel at all there.
+//   0.4183 m   97.2 percent   the shift on the WING strips
+//   0.0100 m    2.3 percent   the shift on the TAILPLANE strips, which lengthens
+//                             the tail arm
+//   0.0019 m    0.4 percent   everything else
 //
-// WHERE THE WHOLE AIRCRAFT ANSWER COMES FROM, MEASURED. Between Mach 0.78 and
-// Mach 0.86 at 8000 m the neutral point of the model moves from station 5.774 m
-// to station 6.215 m, which is 0.441 m, or 0.242 of the mean aerodynamic chord.
-// That travel splits as
+// Every text gives the Mach tuck two causes, and the second one was missing.
+// The first is the aft shift above. The second is the fall of the downwash at
+// the tail: the wake of a wing that is losing its root load stops turning the
+// flow down, the tail meets a larger angle, and the extra up load behind the
+// center of gravity is a nose down moment. Measured, the downwash slope of this
+// model ROSE from 0.550 to 0.555 through the same Mach range, and the tail
+// dynamic pressure ratio held at 0.920 exactly.
 //
-//   0.416 m   94.3 percent   the section shift on the WING strips
-//   0.012 m    2.7 percent   the section shift on the TAILPLANE strips, which
-//                            lengthens the tail arm
-//   0.013 m    3.0 percent   everything else
+// WHAT b73 DID. Section 5 of src/physics/aero/downwash.ts now holds both of the
+// missing effects, and this table was refitted down against them, from 0.50 to
+// 0.425 at the Mach limit. The whole aircraft total did not move. Measured by
+// the same method:
 //
-// The last row was measured by flattening this table to 0.25 everywhere, which
-// leaves 0.014 m of travel. So the model builds the whole of its Mach tuck out
-// of the section shift, and almost nothing out of the parts a real aircraft uses.
+//   before                                   after
+//   0.4302 m total, 0.2364 MAC               0.4257 m total, 0.2339 MAC
+//   0.4183 m  97.2 pct  wing shift           0.2764 m  64.9 pct  wing shift
+//   0.0100 m   2.3 pct  tailplane shift      0.0140 m   3.3 pct  tailplane shift
+//   0.0019 m   0.4 pct  everything else      0.1353 m  31.8 pct  everything else
 //
-// WHY THAT IS A DEFECT EVEN THOUGH THE TOTAL IS RIGHT. The travel of 0.242 chord
-// sits inside the published 0.15 to 0.25 chord band for a swept wing aircraft,
-// and test/flight/mach.test.ts measures the tuck onset at 0.825 against the
-// documented 0.83. The total is not the question. The split is. On a real
-// aircraft most of the travel comes from the tail: the tailplane meets its own
-// shock, loses lift curve slope and dynamic pressure, and the wake behind a wing
-// that is losing lift stops turning the flow down, so the downwash slope falls
-// and the tail meets more angle. This model has none of that working. Measured
-// over the same Mach range, the downwash slope d(epsilon)/d(alpha) RISES from
-// 0.550 to 0.555, which is the wrong way, the tail dynamic pressure ratio holds
-// at 0.920 exactly, and the lift curve slope of the tailplane falls by 1.2
-// percent. Three effects that should carry the tuck carry none of it.
+// The last row is now the two downwash effects. Taken one at a time they are
+// +0.1608 m from the fall of the downwash slope, which runs from 0.562 to 0.249,
+// and -0.0412 m from the fall of the tail dynamic pressure ratio, which runs
+// from 0.920 to 0.817. The second one is NEGATIVE on purpose: a tail with less
+// dynamic pressure is a smaller tail, so it takes stability away at the same
+// time as the aircraft turns nose down. That is the trap the Me 262 pilots met,
+// and the model now builds it out of the two effects that really make it.
 //
-// WHAT THAT COSTS. A model that gets the right total from the wrong parts drifts
-// when anything near it changes. Any bead that touches the tail arm, the tail
-// area, the tail section, the downwash model or the wake will move the tuck by
-// the wrong amount, because the tuck does not answer to any of them here.
-//
-// WHY THE TABLE STILL STANDS. Correcting the split is not a change to this
-// table. It needs a Mach dependent downwash slope and a tail dynamic pressure
-// that falls through the drag rise, both of which live in
-// src/physics/aero/downwash.ts, and then a fresh fit of this table against the
-// firm tuck onset. Bead b66 was asked to measure the split and to leave the
-// total alone unless the evidence said the total was wrong. The evidence says
-// the total is right and the parts are wrong. The measurement is written down
-// here so that the next bead starts from it.
-export const AC_SHIFT_MACH: readonly number[] = [0.78, 0.8, 0.82, 0.83, 0.84, 0.85, 0.86, 0.87, 1.0];
+// The tuck onset still measures Mach 0.825 and every published flight
+// measurement still passes.
+export const AC_SHIFT_MACH: readonly number[] = [0.78, 0.8, 0.82, 0.83, 0.84, 0.85, 0.86, 0.9, 1.0];
 export const AC_SHIFT_X: readonly number[] = [
-  0.25, 0.29, 0.36, 0.43, 0.48, 0.5, 0.5, 0.5, 0.5,
+  0.25, 0.277, 0.325, 0.373, 0.407, 0.421, 0.425, 0.46, 0.5,
 ];
 
 // Control effectiveness. A shock ahead of the hinge line cuts the pressure the
@@ -405,6 +431,42 @@ export function createMachCorrection(): MachCorrection {
 }
 
 /**
+ * The Mach number that drives every shock effect on a surface of this sweep and
+ * this section thickness, in the units the tables of this module are written in.
+ *
+ * The sweep and the thickness both say how hard the flow has to work over the
+ * section, so both move every shock driven effect along the same Mach scale.
+ * machCorrection below reads its five tables at this number, and
+ * src/physics/aero/downwash.ts reads its wake table at the same number for the
+ * wing, so the wake answers the SAME shock that the wing sections answer.
+ *
+ * A negative sweep and a negative Mach number both give the same result as their
+ * magnitude.
+ */
+export function shockMachNumber(
+  mach: number,
+  sweep: number,
+  thickness: number = REFERENCE_THICKNESS,
+): number {
+  const m = mach < 0 ? -mach : mach;
+  const cosSweep = Math.abs(Math.cos(sweep));
+  const relief =
+    SWEEP_RELIEF_EXPONENT === 1 ? cosSweep : Math.pow(cosSweep, SWEEP_RELIEF_EXPONENT);
+  // A thin section meets its shock at a higher Mach number, so the tables are
+  // read lower down. A section thicker than the reference reads them higher up.
+  return m * relief - THICKNESS_MACH_RELIEF * (REFERENCE_THICKNESS - thickness);
+}
+
+/**
+ * Turns free stream Mach anchors at the reference sweep into the anchors of a
+ * table that shockMachNumber reads. src/physics/aero/downwash.ts builds its wake
+ * table with this function, so the two modules place their anchors on one scale.
+ */
+export function shockMachAnchors(freeStream: readonly number[]): number[] {
+  return toNormalMach(freeStream);
+}
+
+/**
  * Writes the five Mach corrections into out and returns out. The function
  * allocates nothing.
  *
@@ -431,9 +493,7 @@ export function machCorrection(
   const relief =
     SWEEP_RELIEF_EXPONENT === 1 ? cosSweep : Math.pow(cosSweep, SWEEP_RELIEF_EXPONENT);
   const normalMach = m * relief;
-  // A thin section meets its shock at a higher Mach number, so the tables are
-  // read lower down. A section thicker than the reference reads them higher up.
-  const shockMach = normalMach - THICKNESS_MACH_RELIEF * (REFERENCE_THICKNESS - thickness);
+  const shockMach = shockMachNumber(m, sweep, thickness);
   const dragScale = Math.pow(thickness / REFERENCE_THICKNESS, WAVE_DRAG_THICKNESS_EXPONENT);
 
   let betaSquared = 1 - normalMach * normalMach;

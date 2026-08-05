@@ -37,10 +37,21 @@
  *   mean chord   = (2/3) * 2.40 * (1 + L + L^2) / (1 + L) = 1.820 m
  *   span station = (b/6) * (1 + 2L) / (1 + L)             = 2.728 m
  *
- * The root leading edge sits 4.25 m aft of the nose tip. The quarter chord
- * line sweeps 18.5 deg. At the span station of the mean chord the quarter
- * chord sits 4.85 + tan(18.5 deg) * 2.728 = 5.763 m aft of the nose tip, and
- * the quarter chord line passes through 25 percent of the mean chord.
+ * The root quarter chord sits 4.992 m aft of the nose tip, so the root leading
+ * edge sits 4.392 m aft of it. The LEADING EDGE sweeps the published 18.5 deg
+ * and the QUARTER CHORD line therefore sweeps 15.72 deg, because the chord
+ * falls from 2.40 m to 1.07 m over the 6.255 m semi span:
+ *
+ *   tan(sweep at c/4) = tan(18.5 deg) - 0.25 * (2.40 - 1.07) / 6.255
+ *                     = 0.33460 - 0.05316 = 0.28144,  that is 15.72 deg.
+ *
+ * At the span station of the mean chord the quarter chord then sits
+ * 4.992 + 0.28144 * 2.728 = 5.760 m aft of the nose tip, and the quarter chord
+ * line passes through 25 percent of the mean chord.
+ *
+ * THE TABLE CALLED 18.5 DEG A QUARTER CHORD ANGLE UNTIL BEAD b65, AND IT IS A
+ * LEADING EDGE ANGLE. This file drew the old angle from a root at 4.850 m until
+ * bead b75. See the note on the sweep in docs/CONVENTIONS.md section 8.
  *
  * CG_OFFSET_FROM_NOSE is therefore 5.76 m aft of the nose tip. That is 54.3
  * percent of the 10.60 m length. A jet that carries its engines under the wing
@@ -295,11 +306,25 @@ const HALF_SPAN = SPAN / 2;
 const WING_ROOT_CHORD = 2.4;
 const WING_TIP_CHORD = 1.07;
 
-/** Sweep of the quarter chord line. Source: CONVENTIONS section 8, firm. */
-const WING_SWEEP = 18.5 * DEG;
+/**
+ * Sweep of the QUARTER CHORD line, derived from the firm leading edge sweep.
+ *
+ * The published 18.5 degrees is the sweep of the LEADING EDGE. See the note on
+ * the sweep in docs/CONVENTIONS.md section 8, and WING_SWEEP of
+ * src/aircraft/me262/geometry.ts, which derives the same 15.72 degrees from the
+ * plan form. The wing the eye sees has to be the wing that makes the moment.
+ * Confidence: derived from firm data.
+ */
+const WING_SWEEP = 15.72 * DEG;
 
-/** Model z of the wing quarter chord at the plane of symmetry, in m. */
-const WING_ROOT_QUARTER_Z = 4.85 - CG_OFFSET_FROM_NOSE;
+/**
+ * Model z of the wing quarter chord at the plane of symmetry, in m.
+ *
+ * Bead b65 moved the root station from 4.850 m to 4.992 m, so that the quarter
+ * chord line of the corrected sweep still passes through 25 percent of the mean
+ * aerodynamic chord at the center of gravity. The drawn wing follows.
+ */
+const WING_ROOT_QUARTER_Z = 4.992 - CG_OFFSET_FROM_NOSE;
 
 /** Wing thickness ratios. Source: CONVENTIONS section 8, firm. */
 const WING_ROOT_THICKNESS = 0.11;

@@ -4,8 +4,11 @@ import {
   MACH_LIMIT,
   REFERENCE_SWEEP,
   TUCK_ONSET_MACH,
+  REFERENCE_THICKNESS,
   createMachCorrection,
   machCorrection,
+  shockMachAnchors,
+  shockMachNumber,
 } from '@/physics/aero/compressibility';
 import type { MachCorrection } from '@/physics/aero/compressibility';
 import { DEG, toDeg } from '@/math/units';
@@ -147,22 +150,34 @@ describe('the aerodynamic center shift', () => {
     }
   });
 
-  it('has moved a third of the way to mid chord at the published tuck onset', () => {
+  it('has moved half of its Mach limit travel at the published tuck onset', () => {
+    // The table travels 0.175 chord between the critical Mach number and the
+    // Mach limit. Rather more than half of that is already spent at the
+    // published tuck onset, which is why the aircraft turns nose down there.
     machCorrection(TUCK_ONSET_MACH, REFERENCE_SWEEP, out);
-    expect(out.acShift).toBeGreaterThan(0.33);
-    expect(out.acShift).toBeLessThan(0.47);
+    expect(out.acShift).toBeGreaterThan(0.35);
+    expect(out.acShift).toBeLessThan(0.40);
   });
 
-  it('reaches mid chord by the Mach limit and stops there', () => {
-    // A section in fully supersonic flow carries its load at mid chord. The
-    // model does not put the aerodynamic center behind that point at any Mach
-    // number, because no section does.
+  it('has moved 0.175 chord at the Mach limit, and never goes past mid chord', () => {
+    // BEAD b73 REFITTED THIS TABLE DOWNWARD. It ran to 0.50 at the Mach limit
+    // until then, which is the fully supersonic mid chord value, and no measured
+    // section reaches it at Mach 0.86. NACA TN 3501 measures 0.07 chord of
+    // SECTION travel by a normal Mach of 0.85. The rest of the value below is
+    // the spanwise migration of the load on a SWEPT wing, which TN 3501 cannot
+    // show because its wings are unswept and rectangular. See the comment on
+    // AC_SHIFT_X in src/physics/aero/compressibility.ts.
     machCorrection(MACH_LIMIT, REFERENCE_SWEEP, out);
-    expect(out.acShift).toBeCloseTo(0.5, 6);
+    expect(out.acShift).toBeCloseTo(0.425, 6);
+
+    // Mid chord is still the wall. A section in fully supersonic flow carries
+    // its load there and the model never puts it behind that point.
     for (let mach = MACH_LIMIT; mach <= 1.2; mach += 0.005) {
       machCorrection(mach, REFERENCE_SWEEP, out);
       expect(out.acShift).toBeLessThanOrEqual(0.5 + 1e-12);
     }
+    machCorrection(1.2, REFERENCE_SWEEP, out);
+    expect(out.acShift).toBeCloseTo(0.5, 6);
   });
 
   it('comes later on a thin section than on a thick one', () => {
@@ -337,5 +352,57 @@ describe('continuity and the call contract', () => {
       controlScale: 1,
       clMaxScale: 1,
     });
+  });
+});
+
+describe('the shock Mach number', () => {
+  it('is the number every table of this module is read at', () => {
+    // src/physics/aero/downwash.ts reads its wake table at the same number, so
+    // the wake meets the shock at the Mach number the wing meets it at. The
+    // check below proves the two agree: the aerodynamic center table holds 0.25
+    // to the critical Mach number, so the shift starts exactly where the shock
+    // Mach number reaches the critical anchor.
+    const anchor = shockMachAnchors([CRITICAL_MACH])[0];
+    for (const [sweep, thickness] of [
+      [REFERENCE_SWEEP, REFERENCE_THICKNESS],
+      [12 * DEG, 0.09],
+      [30.7 * DEG, 0.09],
+    ] as const) {
+      let onset = Infinity;
+      for (let mach = 0.5; mach <= 1.2; mach += 0.0005) {
+        machCorrection(mach, sweep, out, thickness);
+        if (out.acShift > 0.25 + 1e-12) {
+          onset = mach;
+          break;
+        }
+      }
+      expect(shockMachNumber(onset, sweep, thickness)).toBeCloseTo(anchor, 3);
+    }
+  });
+
+  it('gives a swept or a thin surface a later shock in free stream terms', () => {
+    // Both effects say how hard the flow works over the section, so both move
+    // every shock driven effect along the same Mach scale.
+    const reference = shockMachNumber(0.86, REFERENCE_SWEEP, REFERENCE_THICKNESS);
+    expect(shockMachNumber(0.86, 30 * DEG, REFERENCE_THICKNESS)).toBeLessThan(reference);
+    expect(shockMachNumber(0.86, REFERENCE_SWEEP, 0.09)).toBeLessThan(reference);
+    expect(shockMachNumber(0.86, REFERENCE_SWEEP, 0.13)).toBeGreaterThan(reference);
+    // An unswept reference section reads the free stream Mach number itself.
+    expect(shockMachNumber(0.86, 0, REFERENCE_THICKNESS)).toBeCloseTo(0.86, 12);
+    // The magnitude rule of machCorrection holds here as well.
+    expect(shockMachNumber(-0.86, -REFERENCE_SWEEP)).toBe(reference);
+  });
+
+  it('turns a free stream anchor at the reference sweep into a table anchor', () => {
+    // A free stream anchor AT the reference sweep must land on itself, which is
+    // what makes every constant of this module readable as a flight manual Mach
+    // number.
+    for (const mach of [0.78, 0.83, 0.86]) {
+      expect(shockMachNumber(mach, REFERENCE_SWEEP)).toBeCloseTo(
+        shockMachAnchors([mach])[0],
+        12,
+      );
+    }
+    expect(shockMachAnchors([0.78, 0.86])).toHaveLength(2);
   });
 });

@@ -104,7 +104,39 @@
  * fuselage. The pair very nearly cancels.
  *
  *
- * 5. THE LAG
+ * 5. THE TRANSONIC RANGE. BEAD b73
+ *
+ * Two things happen to this model above the critical Mach number, and the model
+ * had neither of them until bead b73.
+ *
+ * THE WAKE STOPS TURNING THE FLOW DOWN. A shock stands on the upper surface of
+ * the wing, the flow behind it starts to leave the surface, and the trailing
+ * vortex sheet weakens. On a SWEPT wing the shock arrives at the ROOT first, so
+ * the load leaves the root and moves outboard. The tail sits on the plane of
+ * symmetry, where the downwash answers the INBOARD load far more than the
+ * outboard load, so the downwash at the tail falls faster than the lift of the
+ * whole wing falls. The tail then meets a larger angle of attack, makes more up
+ * load, and a larger up load behind the center of gravity is a NOSE DOWN moment.
+ * This is one of the two mechanisms every text gives for the Mach tuck, and it
+ * is the one that moves the neutral point AFT through the (1 - d epsilon /
+ * d alpha) term. WAKE_SCALE below holds it.
+ *
+ * THE TAIL LOSES DYNAMIC PRESSURE. The wake is a momentum deficit, so it deepens
+ * with the DRAG of the wing. The wave drag of the drag rise is many times the
+ * profile drag of the same wing, so the tail loses several times more dynamic
+ * pressure at the Mach limit than it loses in cruise. This one works AGAINST the
+ * tuck, because a tail with less dynamic pressure is a smaller tail, and it is
+ * the reason the elevator goes light at the same time as the nose goes down.
+ * WAKE_REFERENCE_DRAG below holds it.
+ *
+ * Both laws read the same shock Mach number that every table of
+ * src/physics/aero/compressibility.ts reads, through shockMachNumber of that
+ * module, so the wake meets the shock at the Mach number the wing meets it at.
+ * Both are exactly neutral below the critical Mach number, so nothing below the
+ * drag rise moves by one count.
+ *
+ *
+ * 6. THE LAG
  *
  * The wake needs l_tail / V seconds to reach the tail, near 0.03 s at 120 m/s.
  * The module holds the first order lag but leaves it OFF by default, because
@@ -128,8 +160,16 @@
  * This module is pure physics. It imports no Three.js class at all.
  */
 
-import { clamp, lerp, smoothstep } from '@/math/tables';
+import { clamp, lerp, lookup1d, smoothstep, table1d } from '@/math/tables';
+import type { Table1D } from '@/math/tables';
 import type { GroupDef } from '@/physics/aero/assembly';
+import type { MachCorrection } from '@/physics/aero/compressibility';
+import {
+  createMachCorrection,
+  machCorrection,
+  shockMachAnchors,
+  shockMachNumber,
+} from '@/physics/aero/compressibility';
 import type { Surface } from '@/physics/aero/surface';
 
 /**
@@ -170,6 +210,99 @@ const ETA_TAIL_WAKE_ATTACHED = 0.8;
 const ETA_TAIL_WAKE_SEPARATED = 0.6;
 
 /**
+ * What the wake still turns down, as a fraction of its low speed value, against
+ * the free stream Mach number AT THE REFERENCE SWEEP of
+ * src/physics/aero/compressibility.ts. See section 5 of the module comment.
+ *
+ * THE MECHANISM, AND WHY IT IS NOT ALREADY IN THE MODEL. This module drives the
+ * downwash from the lift the wing really makes, so it already carries the
+ * subsonic compressibility rule that DATCOM 4.4.1 gives, which is that
+ * d epsilon / d alpha follows the lift curve slope of the wing. Measured, that
+ * rule alone moves the slope of this wing from 0.550 to 0.555 between Mach 0.78
+ * and Mach 0.86, because the Prandtl-Glauert growth and the shock loss of
+ * SLOPE_LOSS_SCALE very nearly cancel. The real transonic fall is not a lift
+ * curve slope effect at all. It is the shock separating the flow at the ROOT of
+ * a swept wing, which takes the load away from exactly the span stations the
+ * tail answers to and carries it outboard.
+ *
+ * Anchor by anchor. Every anchor is a free stream value at the REFERENCE SWEEP
+ * and at the REFERENCE THICKNESS of compressibility.ts, exactly as every anchor
+ * of that module is, so a surface with its own sweep and its own section reads
+ * the table at its own place. The value is 1 to the critical Mach number,
+ * because there is no shock below it. It falls slowly to Mach 0.82, where the
+ * shock is still weak and stands well forward, then fast through 0.84 and 0.86,
+ * where the shock is strong and the root sheds its load. It holds near 0.3 above
+ * Mach 0.9, because a wake that turns nothing at all is not what any measurement
+ * shows.
+ *
+ * WHAT THE MODEL GETS FROM IT. The innermost strip of the Me 262 wing is 10.8
+ * percent thick against the 11 percent reference, so it meets its shock a little
+ * later and reads 0.435 at Mach 0.86 where the anchor says 0.40. The slope
+ * d epsilon / d alpha of the whole aircraft then falls from 0.562 to 0.249
+ * between Mach 0.78 and Mach 0.86, at 8000 m, so (1 - d epsilon / d alpha) grows
+ * from 0.44 to 0.75 and the tail term of the neutral point grows with it. That
+ * is 0.161 m of the 0.426 m the neutral point travels. See the comment on
+ * AC_SHIFT_X of compressibility.ts for the whole split.
+ *
+ * Source: the standard two term explanation of the Mach tuck, which is the aft
+ * shift of the wing aerodynamic center AND the fall of the downwash at the tail.
+ * Hurt, "Aerodynamics for Naval Aviators", NAVWEPS 00-80T-80, chapter 3, gives
+ * both. The transonic measurement behind a swept wing is NACA RM L52J15,
+ * Coppolino, 1952, "Effective downwash characteristics at transonic speeds of a
+ * 6-percent-thick wing with 47 degrees of sweepback". Confidence: firm for the
+ * direction and the mechanism, ESTIMATE for the size, anchored on the firm tuck
+ * onset Mach number of 0.83.
+ */
+const WAKE_MACH: readonly number[] = [0.78, 0.8, 0.82, 0.84, 0.86, 0.88, 0.9, 1.0];
+const WAKE_SCALE: readonly number[] = [1.0, 0.97, 0.88, 0.66, 0.4, 0.33, 0.3, 0.3];
+
+/**
+ * Wing profile drag coefficient that ETA_TAIL_CLEAN belongs to.
+ *
+ * A wake is a momentum deficit, and the deficit is the DRAG. Hoerner fits the
+ * velocity deficit at the center of a plane wake as proportional to
+ * sqrt(cd c / x), so the dynamic pressure loss at a fixed station behind the
+ * wing grows with the SQUARE ROOT of the drag coefficient of the wing. Silverstein
+ * and Katzoff give the same result in the form the tail needs: they chart the
+ * dynamic pressure across the wake against the profile drag coefficient and the
+ * distance behind the wing.
+ *
+ * The model therefore holds the loss at
+ *
+ *   1 - eta = (1 - ETA_TAIL_CLEAN) * sqrt(1 + cd_wave / WAKE_REFERENCE_DRAG)
+ *
+ * with cd_wave the wave drag the wing pays at this Mach number. The value below
+ * is the profile drag coefficient of the Me 262 wing in cruise, from the section
+ * tables, so the law returns ETA_TAIL_CLEAN exactly below the drag rise and the
+ * calibration of that constant is untouched.
+ *
+ * Measured on this aircraft: the tail keeps 0.920 of the free stream to Mach
+ * 0.78 and 0.817 of it at Mach 0.86. That is the other half of what a pilot met
+ * at the limit, because a tail with less dynamic pressure has less elevator. It
+ * takes 0.041 m of neutral point travel BACK, which is the honest sign: a
+ * smaller tail is a less stable aircraft, and the aircraft turns nose down and
+ * loses its elevator at the same time.
+ *
+ * Source: Silverstein and Katzoff, NACA Report 648, 1939, "Design charts for
+ * predicting downwash angles and wake characteristics behind plain and flapped
+ * wings", and Hoerner, "Fluid Dynamic Drag", chapter 3, wake surveys.
+ * Confidence: firm for the square root law, estimate for the reference drag.
+ */
+const WAKE_REFERENCE_DRAG = 0.009;
+
+/**
+ * The lowest dynamic pressure ratio the wave drag law above may reach.
+ *
+ * The square root law has no upper bound, and the wave drag of the reference
+ * section reaches 0.384 at Mach 1, which would take the ratio to 0.47. That is
+ * below the value this module gives a tail sitting INSIDE the wake of a fully
+ * separated wing, which cannot be right for a tail that is still in clear air.
+ * The floor holds the law at the separated wake value. This aircraft cannot
+ * reach the Mach number where the floor acts. Confidence: estimate.
+ */
+const ETA_TAIL_SHOCK_FLOOR = 0.6;
+
+/**
  * Half thickness of the wake at the tail, as a fraction of the wing mean chord.
  * The attached value is the viscous wake of an attached section two chords
  * downstream. The separated value is the dead air behind a fully stalled wing,
@@ -192,9 +325,14 @@ const WAKE_HALF_THICKNESS_SEPARATED = 0.75;
  *
  * with z_w the height of the wing root quarter chord above the body center line
  * and d the depth of the body. For the Me 262 the fin area is 3.09 m2 against a
- * wing of 21.7 m2 and 18.5 degrees of sweep, which gives 0.224. The aspect ratio
- * term gives 0.065. The wing sits ON the body center line, so the third term is
- * zero and its sign never enters. The sum is 1.01.
+ * wing of 21.7 m2 and 15.72 degrees of QUARTER CHORD sweep, which gives 0.222.
+ * The aspect ratio term gives 0.065. The wing sits ON the body center line, so
+ * the third term is zero and its sign never enters. The sum is 1.01.
+ *
+ * BEAD b75 REDID THIS SUM AT THE CORRECTED SWEEP AND THE ANSWER DID NOT MOVE.
+ * The line above read 18.5 degrees, which is the LEADING EDGE angle, and the
+ * sweep term then gave 0.224 against the 0.222 it gives at the quarter chord
+ * angle. The sum rounds to 1.01 either way, so SIDEWASH_SLOPE keeps its value.
  *
  * The turn at this fin is therefore FAVORABLE, and it very nearly cancels the
  * dynamic pressure loss. With eta_v at 0.95 the slope is (1 - 1.012 / 0.95),
@@ -227,6 +365,14 @@ const SEPARATION_FLOOR = 0.04;
 const MAX_WAKE_ANGLE = 1.3; // rad
 
 /**
+ * The wake table of section 5, on the shock Mach scale of
+ * src/physics/aero/compressibility.ts, and the scratch that reads the wave drag
+ * of the wing. Both live in module scope, because the step allocates nothing.
+ */
+const WAKE_SCALE_TABLE: Table1D = table1d(shockMachAnchors(WAKE_MACH), WAKE_SCALE.slice());
+const wakeCorrection: MachCorrection = createMachCorrection();
+
+/**
  * Everything the model needs. downwashParams builds it from the assembly, and a
  * test can build one by hand or copy one and change a field.
  */
@@ -243,6 +389,23 @@ export interface DownwashParams {
   wingAspectRatio: number;
   /** Mean chord of the wing, meters. It sets the thickness of the wake. */
   wingMeanChord: number;
+  /**
+   * rad, the area weighted quarter chord sweep of the wing. Both transonic laws
+   * of section 5 read it, because the sweep is what sets the shock Mach number.
+   */
+  wingSweep: number;
+  /**
+   * t/c of the wing section AT THE ROOT, which is the thickest section and the
+   * one that meets its shock first. WAKE_SCALE reads it, because the load the
+   * tail answers to is the load near the plane of symmetry.
+   */
+  wingRootThickness: number;
+  /**
+   * Area weighted t/c of the whole wing. The wave drag law of WAKE_REFERENCE_DRAG
+   * reads it, because the wake carries the drag of the WHOLE wing and not the
+   * drag of its thickest section.
+   */
+  wingMeanThickness: number;
   /** PI e AR of the wing. It turns the solved induced angle back into CL. */
   wingClPerInducedAngle: number;
   /** Meters from the wing quarter chord to the tail quarter chord. */
@@ -269,7 +432,7 @@ export interface DownwashParams {
   sidewashSlope: number;
   /** Dynamic pressure ratio at the fin. */
   etaFin: number;
-  /** True lags the downwash by the wake travel time. See section 5 above. */
+  /** True lags the downwash by the wake travel time. See section 6 above. */
   useLag: boolean;
 }
 
@@ -281,6 +444,11 @@ export interface DownwashState {
   sigma: number;
   /** Dynamic pressure ratio at the tail this step. */
   etaTail: number;
+  /**
+   * What the wake still turns down this step, as a fraction of its low speed
+   * value. It is 1 below the drag rise. See section 5 of the module comment.
+   */
+  wakeScale: number;
   /** Dynamic pressure ratio at the fin this step. */
   etaFin: number;
   /** How much of the wake covers the tail. 0 is clear and 1 is inside the core. */
@@ -314,6 +482,7 @@ export function createDownwash(params: DownwashParams): Downwash {
       epsilon: 0,
       sigma: 0,
       etaTail: params.etaTailClean,
+      wakeScale: 1,
       etaFin: params.etaFin,
       wakeCoverage: 0,
       wakeOffset: params.tailAboveWing,
@@ -331,6 +500,8 @@ export function createDownwash(params: DownwashParams): Downwash {
  * wingLift is the lift of the WHOLE wing this step, in newtons.
  * wingSeparation is the area weighted separation point of the wing strips, 1
  * attached and 0.04 fully separated. alpha and beta are the free stream angles.
+ * mach is the free stream Mach number, which both transonic laws of section 5
+ * read. A Mach number below the drag rise leaves both laws neutral.
  */
 export function updateDownwash(
   d: Downwash,
@@ -339,23 +510,33 @@ export function updateDownwash(
   alpha: number,
   beta: number,
   speed: number,
+  mach: number,
   dynamicPressure: number,
   dt: number,
 ): void {
   const p = d.params;
   const s = d.state;
 
+  // SECTION 5. The shock the WING meets. The root section is the thickest and
+  // the least relieved, so it is the one that sheds its load first, and the tail
+  // sits behind the root.
+  s.wakeScale = lookup1d(
+    WAKE_SCALE_TABLE,
+    shockMachNumber(mach, p.wingSweep, p.wingRootThickness),
+  );
+
   // The downwash follows the lift the wing really makes. At the stall that lift
-  // collapses and the downwash collapses with it.
+  // collapses and the downwash collapses with it. Past the drag rise the shock
+  // takes the turning power of the wake away as well.
   const cl =
     dynamicPressure > MIN_PRESSURE && p.wingArea > 0
       ? wingLift / (dynamicPressure * p.wingArea)
       : 0;
-  const steady = (p.wakeFactor * cl) / (Math.PI * p.wingAspectRatio);
+  const steady = (p.wakeFactor * s.wakeScale * cl) / (Math.PI * p.wingAspectRatio);
 
   if (p.useLag && speed > MIN_LAG_SPEED && dt > 0) {
     const travel = p.tailArm / speed;
-    // The exact solution of the first order lag over dt. See section 5 above.
+    // The exact solution of the first order lag over dt. See section 6 above.
     s.laggedEpsilon += (steady - s.laggedEpsilon) * (travel > 0 ? 1 - Math.exp(-dt / travel) : 1);
   } else {
     s.laggedEpsilon = steady;
@@ -383,10 +564,20 @@ export function updateDownwash(
   );
   s.wakeCoverage =
     halfThickness > 0 ? 1 - smoothstep(halfThickness, 2 * halfThickness, s.wakeOffset) : 0;
+  // SECTION 5. A wake is a momentum deficit and the deficit is the drag, so the
+  // wave drag of the drag rise deepens the wake and the tail loses pressure with
+  // it. The loss follows the square root of the drag coefficient. Below the drag
+  // rise the wave drag is zero and this returns etaTailClean exactly.
+  machCorrection(mach, p.wingSweep, wakeCorrection, p.wingMeanThickness);
+  const clean = Math.max(
+    1 - (1 - p.etaTailClean) * Math.sqrt(1 + wakeCorrection.cdAdd / WAKE_REFERENCE_DRAG),
+    Math.min(p.etaTailClean, ETA_TAIL_SHOCK_FLOOR),
+  );
+
   // The wake of an attached wing is thin AND mild. The wake of a separated wing
   // is thick AND slow. The separation state therefore sets both.
   const core = lerp(p.etaTailWakeAttached, p.etaTailWakeSeparated, separated);
-  s.etaTail = lerp(p.etaTailClean, core, s.wakeCoverage);
+  s.etaTail = lerp(clean, core, s.wakeCoverage);
 
   s.sigma = p.sidewashSlope * beta;
   s.etaFin = p.etaFin;
@@ -432,6 +623,7 @@ export function resetDownwash(d: Downwash): void {
   s.epsilon = 0;
   s.sigma = 0;
   s.etaTail = p.etaTailClean;
+  s.wakeScale = 1;
   s.etaFin = p.etaFin;
   s.wakeCoverage = 0;
   s.wakeOffset = p.tailAboveWing;
@@ -464,6 +656,7 @@ export function applyDownwash(
   alpha: number,
   beta: number,
   speed: number,
+  mach: number,
   dynamicPressure: number,
   dt: number,
 ): void {
@@ -493,6 +686,7 @@ export function applyDownwash(
     alpha,
     beta,
     speed,
+    mach,
     dynamicPressure,
     dt,
   );
@@ -589,6 +783,9 @@ export function downwashParams(
     wingArea: 0,
     wingAspectRatio: 0,
     wingMeanChord: 0,
+    wingSweep: 0,
+    wingRootThickness: 0.11,
+    wingMeanThickness: 0.11,
     wingClPerInducedAngle: 0,
     tailArm: 0,
     tailAboveWing: 0,
@@ -646,6 +843,21 @@ export function downwashParams(
   const tailZ =
     tail === undefined ? wingZ : meanOverGroup(surfaces, tail.surfaceIndices, (s) => s.def.position.z);
   const chord = meanOverGroup(surfaces, wing.surfaceIndices, (s) => s.def.chord);
+  const sweep = meanOverGroup(surfaces, wing.surfaceIndices, (s) => Math.abs(s.def.sweep));
+  const meanThickness = meanOverGroup(
+    surfaces,
+    wing.surfaceIndices,
+    (s) => s.def.airfoil.thickness,
+  );
+  // The section nearest the plane of symmetry. It is the thickest, it meets its
+  // shock first, and it is the one whose load the tail answers to.
+  let rootIndex = wing.surfaceIndices[0];
+  for (const index of wing.surfaceIndices) {
+    if (Math.abs(surfaces[index].def.position.y) < Math.abs(surfaces[rootIndex].def.position.y)) {
+      rootIndex = index;
+    }
+  }
+  const rootThickness = surfaces[rootIndex].def.airfoil.thickness;
   const tailSlope = tail === undefined ? 0 : groupSlope(surfaces, tail.surfaceIndices);
   const finSlope = fin === undefined ? 0 : groupSlope(surfaces, fin.surfaceIndices);
 
@@ -656,6 +868,9 @@ export function downwashParams(
     wingArea: wing.area,
     wingAspectRatio: wing.aspectRatio,
     wingMeanChord: chord,
+    wingSweep: sweep,
+    wingRootThickness: rootThickness,
+    wingMeanThickness: meanThickness,
     wingClPerInducedAngle: Math.PI * wing.oswaldEfficiency * wing.aspectRatio,
     tailArm: wingX - tailX,
     // Body z points down, so a tail above the wing has the smaller z.

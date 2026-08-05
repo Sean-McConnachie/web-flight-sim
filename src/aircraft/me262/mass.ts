@@ -128,13 +128,31 @@ const SPAN = 12.51; // m, firm
 const HALF_SPAN = SPAN / 2;
 const ROOT_CHORD = 2.4; // m, derived from the firm span and area
 const TIP_CHORD = 1.07; // m, derived
-const TAN_SWEEP = Math.tan(18.5 * DEG); // quarter chord sweep, firm
+// Sweep of the QUARTER CHORD line. The published 18.5 degrees is the LEADING
+// EDGE angle, and the quarter chord line of this plan form sweeps 15.72 degrees.
+// See the note on the sweep in docs/CONVENTIONS.md section 8, and WING_SWEEP of
+// src/aircraft/me262/geometry.ts, which derives the same angle.
+//
+// THE WING MASS LUMPS HAVE TO SIT ON THE LINE THE AERODYNAMIC STRIPS SIT ON.
+// This file held 18.5 degrees until bead b75, so the mass model put the wing
+// 0.14 m further aft at the tip than geometry.ts put it. The computed center of
+// gravity moves 2.4 mm, which is nothing, but the two models now agree about
+// WHERE the wing is, and a later bead that moves the wing moves both together.
+const TAN_SWEEP = Math.tan(15.72 * DEG); // quarter chord sweep, derived
 const TAN_DIHEDRAL = Math.tan(3.5 * DEG); // estimate from photographs
 const DIHEDRAL_START = 2.2; // m, the inner panel is flat
 const FUSELAGE_LENGTH = 10.6; // m, firm
 
-/** Station of the wing root quarter chord, meters aft of the nose tip. */
-const WING_ROOT_QUARTER_STATION = 4.85; // m
+/**
+ * Station of the wing root quarter chord, meters aft of the nose tip.
+ *
+ * Bead b65 moved this station from 4.850 m to 4.992 m in
+ * src/aircraft/me262/geometry.ts, so that the quarter chord line of the
+ * CORRECTED sweep still passes through 25 percent of the mean aerodynamic chord
+ * at the center of gravity. Bead b75 carries the same station here. Confidence:
+ * derived, see WING_ROOT_QUARTER_STATION of geometry.ts.
+ */
+const WING_ROOT_QUARTER_STATION = 4.992; // m
 
 /** Local streamwise chord of the wing at a span station. */
 function wingChord(y: number): number {

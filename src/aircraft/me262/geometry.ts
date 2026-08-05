@@ -143,9 +143,9 @@ export const WING_SWEEP_LEADING_EDGE = 18.5 * DEG; // rad
  * which is 15.72 degrees. The two angles differ by 2.8 degrees, so the choice is
  * not a rounding question. Confidence: derived from firm data.
  *
- * src/render/models/me262.ts still draws a quarter chord line at 18.5 degrees,
- * rooted at station 4.85 m. The two files disagree until that one follows. Bead
- * b65 does not own the render model, so its report names the change.
+ * src/render/models/me262.ts and src/aircraft/me262/mass.ts now use the same
+ * 15.72 degrees, rooted at station 4.992 m. Bead b75 carried the correction
+ * into both. All three files agree.
  */
 export const WING_SWEEP = Math.atan(
   Math.tan(WING_SWEEP_LEADING_EDGE) - (0.25 * (ROOT_CHORD - TIP_CHORD)) / HALF_SPAN,
@@ -496,9 +496,8 @@ const FIN_ROOT_HEIGHT = 0.5; // m
  * pilot notes warn against single engine flight below 300 km/h, and a fin of
  * 2.00 m span reaches 305 km/h. Confidence: derived from firm data.
  *
- * src/render/models/me262.ts still draws the 1.67 m fin, with its rudder span
- * of 0.25 to 1.52 m. The two files disagree until that one follows. Bead b49
- * does not own the render model, so its report names the change.
+ * src/render/models/me262.ts now draws the same 2.00 m fin, with a rudder span
+ * of 0.25 to 1.85 m. The two files agree.
  */
 const FIN_SPAN = 2.0; // m
 const FIN_ROOT_CHORD = 2.55; // m
