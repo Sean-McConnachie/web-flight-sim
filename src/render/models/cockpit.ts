@@ -128,65 +128,12 @@
  *   whole subtree in the render list and in the shadow pass.
  *
  *
- * 7. THE HOOD OCCLUDER, AND THE FAULT IT WORKS AROUND
+ * 7. NO WORK AROUND FOR THE HOOD SHELL
  *
- * The hood of the exterior model is a CLOSED glass shell. `canopyRing` of
- * src/render/models/me262.ts ends each ring with a line of points along the
- * sill, so the loft carries a flat glass FLOOR at y = 0.56, and `capStart` and
- * `capEnd` close both ends. From outside that floor never shows, because the
- * fuselage skin covers it up to y = 0.75.
- *
- * From the eye of the pilot it does show. The eye stands only 0.07 m above the
- * skin, so the skin ahead of the eye falls inside the 0.3 m near plane and the
- * clip removes it. The line of sight to the panel then crosses the glass floor
- * at about 0.34 m, and every dial reads through one more sheet of glass. The
- * panel goes milky.
- *
- * THE REAL FIX BELONGS IN me262.ts. Bead henri-flight-sim-37m holds it. That
- * file is out of scope for this bead, so the work around below stands until
- * that bead lands.
- *
- * The work around here is two plates that write DEPTH and no COLOR. One lies
- * over the glass floor and one stands aft of the two glass caps at station
- * 3.74. The opaque pass draws the whole interior first, so a plate cannot hide
- * it. The transparent pass then draws the plates before the glass, and the
- * glass fails the depth test and never reaches the picture.
- *
- * A line of sight must fall more than 16.7 deg below the horizon to meet
- * either plate. The view over the nose runs 5.7 deg below the horizon, so the
- * windscreen, the armored glass and the whole view out stay untouched.
- *
- * NEITHER PLATE MAY GROW. A plate writes depth 0.4 m from the eye, and every
- * transparent draw that follows fails against it. A plate over the forward
- * window would therefore take out the clouds, the tracers and the exhaust as
- * well as the glass. The milky forward view that is left belongs to bead
- * henri-flight-sim-37m and to no work around here.
- *
- *
- * 8. THE TWO HOOPS THE INTERIOR HIDES, AND THE SAME FAULT AGAIN
- *
- * `canopyHoop` of me262.ts wraps the SAME closed section, so each hood frame
- * carries a solid bar across the cockpit at the sill line, 16 mm thick and 44
- * mm deep. A canopy frame does not do that on a real aircraft, because a real
- * hood is open at the bottom. The bar at station 3.76 belongs to the SLIDING
- * half of the hood, so on a real aircraft that bar would sweep through the
- * chest of the pilot when the hood opens. It is a modelling artifact and it is
- * not framing. This file therefore hides it, and it hides no real framing.
- *
- * Two of those bars sit in the line of sight to the panel. The hoop at station
- * 3.72 fills 29.9 to 31.4 deg below the horizon and the hoop at station 3.76
- * fills 32.3 to 36.9 deg. Together they cover the whole second row of dials.
- * The bars are OPAQUE, so the depth plates of section 7 cannot take them out.
- *
- * `setVisible` therefore hides those two meshes while the cockpit view runs,
- * and puts them back for every other view. Nothing is lost: the bars sit 0.19
- * m under the fuselage deck, which is opaque, so no outside view ever shows
- * them, and this file draws its own frame member at station 3.71 in their
- * place. EXTERIOR_HIDDEN_IN_COCKPIT holds the two names.
- *
- * DELETE THAT LIST, and the plates of section 7, once bead
- * henri-flight-sim-37m opens the hood shell at the bottom. The one change in
- * me262.ts fixes section 7 and section 8 together.
+ * This file once held two depth only plates and a list of two exterior hoops
+ * to hide. Both worked around a CLOSED hood shell in
+ * src/render/models/me262.ts. Bead henri-flight-sim-37m opened that shell at
+ * the sill, so the plates and the list are gone. Do not put them back.
  */
 
 import type { Material } from 'three/webgpu';
@@ -267,13 +214,6 @@ export const ME262_COCKPIT_TRAVEL = {
   /** One rudder pedal, from the neutral position. */
   pedal: 0.24,
 } as const;
-
-/**
- * Meshes of the EXTERIOR model that the interior takes out of the picture
- * while the cockpit view runs. Read section 8 for the reason. Bead
- * henri-flight-sim-37m removes the need for this list.
- */
-const EXTERIOR_HIDDEN_IN_COCKPIT = ['windscreen-hoop-1', 'canopy-hoop-0'];
 
 /**
  * Distance of the reticle plane ahead of the eye, in meters. Read section 5.
@@ -453,8 +393,6 @@ interface CockpitMaterials {
   sightGlass: MeshStandardNodeMaterial;
   /** The collimated mark. Read section 5. */
   reticle: MeshBasicNodeMaterial;
-  /** Depth only plate that hides the floor of the hood shell. Read section 7. */
-  occluder: MeshBasicNodeMaterial;
 }
 
 /** Gain of the reticle color. The mark must stay bright after tone mapping. */
@@ -535,17 +473,7 @@ function createCockpitMaterials(): CockpitMaterials {
   });
   reticle.colorNode = color(0xff8c1a).mul(float(RETICLE_GAIN));
 
-  // The plate of section 7. `transparent` puts it in the second pass, where it
-  // runs before the glass. `colorWrite` off leaves the picture alone.
-  const occluder = new MeshBasicNodeMaterial({
-    name: 'cockpit-hood-occluder',
-    transparent: true,
-    colorWrite: false,
-    depthWrite: true,
-    side: DoubleSide,
-  });
-
-  return { paint, bezel, gaugeFace, steel, grip, leather, sightGlass, reticle, occluder };
+  return { paint, bezel, gaugeFace, steel, grip, leather, sightGlass, reticle };
 }
 
 function disposeCockpitMaterials(set: CockpitMaterials): void {
@@ -557,7 +485,6 @@ function disposeCockpitMaterials(set: CockpitMaterials): void {
   set.leather.dispose();
   set.sightGlass.dispose();
   set.reticle.dispose();
-  set.occluder.dispose();
 }
 
 // ---------------------------------------------------------------------------
@@ -1003,10 +930,10 @@ function buildStructure(context: BuildContext): void {
   );
 
   for (const side of [1, -1] as const) {
-    // The wall reaches from the front bulkhead at station 3.16 to station 5.02.
-    // It must meet the bulkhead. The fuselage skin is a single sided surface,
-    // so a gap in the side of the cockpit shows the ground through the skin,
-    // and a head that turns 40 deg and looks 25 deg down finds that gap.
+    // The wall reaches from the front bulkhead at station 3.16 to station 5.02,
+    // so the two meet. The fuselage skin is a single sided surface and it lies
+    // inside the 0.3 m near plane at this station, so an open side of the foot
+    // well would show the ground through the skin.
     const wall = new BoxGeometry(0.02, 0.9, 1.86);
     // The wall runs from x = 0.412 at the floor to x = 0.324 at the sill. The
     // skin holds a half width of 0.49 at that height, so the wall stays inside.
@@ -1056,45 +983,6 @@ function buildStructure(context: BuildContext): void {
     context.materials.paint,
     'rear-deck',
   );
-}
-
-/**
- * The two plates that hide the closed parts of the hood shell. Read section 7.
- *
- * The FLOOR plate lies 2.5 mm above the glass floor at y = 0.56. The CAP plate
- * stands 5 mm aft of the two flat glass discs that close the hood at station
- * 3.74, and it reaches up to y = 0.715. A line of sight to the panel crosses
- * that station under y = 0.70, and the view over the nose crosses it at y =
- * 0.78, so the plate takes the caps out and leaves the view alone.
- *
- * Each plate goes in twice, with a render order of +1 and of -1, and the two
- * meshes share one geometry. The reversed depth buffer of this project turns
- * the painter order over, which CONVENTIONS section 6a warns about, and this
- * file holds no renderer to read `reversedDepthBuffer` from. One of the two
- * meshes therefore always reaches the depth buffer before the glass. The other
- * one writes depth that no later draw reads, so it costs one draw call and
- * changes nothing.
- */
-function buildHoodOccluder(context: BuildContext): void {
-  const addPair = (geometry: BufferGeometry, name: string): void => {
-    for (const order of [1, -1] as const) {
-      const mesh = new Mesh(geometry, context.materials.occluder);
-      mesh.name = `${name}-${order > 0 ? 'a' : 'b'}`;
-      mesh.renderOrder = order;
-      mesh.castShadow = false;
-      mesh.receiveShadow = false;
-      context.root.add(mesh);
-    }
-    context.geometries.push(geometry);
-  };
-
-  // The floor plate covers only the cone that reaches the panel, which is the
-  // stations 3.35 to 4.01 and 0.31 m to each side. A wider plate writes depth
-  // over the view out of the cockpit, and the ambient occlusion of the post
-  // chain then reads that depth as a surface 0.34 m from the eye and paints
-  // the area black.
-  addPair(slab(new Vector3(0, 0.5625, aft(3.68)), 0.62, 0.003, 0.66), 'hood-floor-occluder');
-  addPair(slab(new Vector3(0, 0.635, aft(3.7455)), 0.62, 0.17, 0.003), 'hood-cap-occluder');
 }
 
 function buildSeat(context: BuildContext): void {
@@ -1435,7 +1323,6 @@ export function createMe262Cockpit(): Me262Cockpit {
   const pivots: Partial<Me262CockpitPivots> = {};
 
   buildStructure(context);
-  buildHoodOccluder(context);
   buildSeat(context);
   buildConsoles(context, pivots);
   buildPanel(context);
@@ -1449,23 +1336,6 @@ export function createMe262Cockpit(): Me262Cockpit {
   // idle stop, which is zero, because the aircraft spawns with the engines off.
   for (const pivot of Object.values(complete)) pivot.rotation.set(0, 0, 0);
 
-  // The exterior meshes of section 8. The list is empty until the caller adds
-  // `root` to the model, because only then can this module reach them.
-  let hoops: Object3D[] | null = null;
-
-  /** Finds the two hoops of section 8 one time, then holds them. */
-  function findHoops(): Object3D[] {
-    if (hoops !== null) return hoops;
-    const parent = root.parent;
-    if (parent === null) return [];
-    hoops = [];
-    for (const name of EXTERIOR_HIDDEN_IN_COCKPIT) {
-      const found = parent.getObjectByName(name);
-      if (found !== undefined) hoops.push(found);
-    }
-    return hoops;
-  }
-
   return {
     root,
     gauges: context.gauges,
@@ -1474,13 +1344,9 @@ export function createMe262Cockpit(): Me262Cockpit {
 
     setVisible(v: boolean): void {
       root.visible = v;
-      for (const hoop of findHoops()) hoop.visible = !v;
     },
 
     dispose(): void {
-      // The hoops belong to the exterior model, so they must go back.
-      for (const hoop of findHoops()) hoop.visible = true;
-      hoops = null;
       for (const geometry of context.geometries) geometry.dispose();
       context.geometries.length = 0;
       disposeCockpitMaterials(materials);

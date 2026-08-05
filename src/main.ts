@@ -43,8 +43,10 @@ import { createLoop } from '@/core/loop';
 import type { InputSystem } from '@/input/bindings';
 import { createInputSystem } from '@/input/bindings';
 import { clamp } from '@/math/tables';
+import { G0 } from '@/math/units';
 import { equivalentAirspeed } from '@/physics/atmosphere';
 import type { Wrench } from '@/physics/rigidbody';
+import { worldToBody } from '@/physics/rigidbody';
 import { createArmament } from '@/weapons/armament';
 import { createCameraRig } from '@/render/cameras';
 import { createForceArrows } from '@/render/force-arrows';
@@ -60,6 +62,8 @@ import { createRenderer, isWebGPUAvailable } from '@/render/renderer';
 import { createWeaponEffects } from '@/render/weapons';
 import type { TelemetrySample } from '@/ui/debug-overlay';
 import { createDebugOverlay } from '@/ui/debug-overlay';
+import type { CockpitGauges } from '@/ui/gauges';
+import { createMe262Gauges } from '@/ui/gauges';
 import { createHud } from '@/ui/hud';
 import { createTelemetryGraph } from '@/ui/telemetry-graph';
 import { createWorld } from '@/world/scene';
@@ -96,6 +100,19 @@ interface EngineReadoutFields {
   rpm: number;
   gasTemperature: number;
   state: string;
+}
+
+/**
+ * What the cockpit dials read from one engine. The gauge type is readonly.
+ *
+ * The rotor speed goes over in RADIANS PER SECOND. CONVENTIONS section 2 says
+ * the model holds rad/s and only the gauge shows rpm, so the conversion sits
+ * inside src/ui/gauges/tachometer.ts and not here.
+ */
+interface EngineGaugeFields {
+  rotorSpeed: number;
+  gasTemperature: number;
+  fuelFlow: number;
 }
 
 /** Radius of each wheel, in meters, in the leg order of src/physics/gear.ts. */
@@ -307,6 +324,9 @@ async function main(): Promise<void> {
   // into the cockpit view and hidden in every other view. A flight that never
   // uses that view therefore never pays for it. See cockpit.ts section 6.
   let cockpit: Me262Cockpit | null = null;
+  // The live dials of that interior. They are built with it and they only run
+  // while it is on screen, for the same reason.
+  let gauges: CockpitGauges | null = null;
 
   const arrows = createForceArrows(aircraft.assembly.surfaces.length);
   model.root.add(arrows.root);
@@ -401,6 +421,25 @@ async function main(): Promise<void> {
     flapPosition: 0,
     rounds: armament.roundsLeft,
   };
+
+  // --- The cockpit dials -------------------------------------------------
+  // ONE interface carries every value that reaches a dial. Its shape is the
+  // CockpitReadout of src/ui/gauges/readout.ts, and the telemetry sample above
+  // carries the rest. Nothing under src/ui reaches into the physics itself.
+  const gaugeEngines: EngineGaugeFields[] = aircraft.state.engines.map(() => ({
+    rotorSpeed: 0,
+    gasTemperature: 0,
+    fuelFlow: 0,
+  }));
+  const gaugeReadout = {
+    engines: gaugeEngines,
+    fuelMass: 0,
+    lateralAcceleration: 0,
+    longitudinalAcceleration: 0,
+  };
+  // Scratch for the specific force below. The frame allocates nothing.
+  const gaugeGravityWorld = new Vector3();
+  const gaugeGravityBody = new Vector3();
 
   // --- The render pose ---------------------------------------------------
   // The loop steps the physics a whole number of times per frame and reports
@@ -538,6 +577,9 @@ async function main(): Promise<void> {
       if (inCockpit && cockpit === null) {
         cockpit = createMe262Cockpit();
         model.root.add(cockpit.root);
+        // The dials paint every face one time, here. Nothing after this line
+        // uploads a texture. See src/ui/gauges/index.ts.
+        gauges = createMe262Gauges(cockpit.gauges);
       }
       if (cockpit !== null) {
         cockpit.setVisible(inCockpit);
@@ -578,6 +620,31 @@ async function main(): Promise<void> {
       readout.gearPosition = systems.gearPosition;
       readout.flapPosition = systems.flapPosition;
       readout.rounds = armament.roundsLeft;
+
+      // --- The cockpit dials --------------------------------------------
+      // They only run while the interior is on screen. A needle nobody can see
+      // costs nothing to leave where it was.
+      if (inCockpit && gauges !== null) {
+        for (let i = 0; i < gaugeEngines.length; i++) {
+          const engine = aircraft.state.engines[i];
+          gaugeEngines[i].rotorSpeed = engine.rotorSpeed;
+          gaugeEngines[i].gasTemperature = engine.gasTemperature;
+          gaugeEngines[i].fuelFlow = engine.fuelFlow;
+        }
+        gaugeReadout.fuelMass = systems.fuelMass;
+        // The slip ball and the erection error of the gyro horizon both hang
+        // on the SPECIFIC FORCE, which is the total body force with gravity
+        // taken out, over the mass. src/aircraft/aircraft.ts builds its own
+        // load factor from the z part of the same difference.
+        const mass = aircraft.state.mass.mass;
+        gaugeGravityWorld.set(0, 0, mass * G0);
+        worldToBody(aircraft.state.body.orientation, gaugeGravityWorld, gaugeGravityBody);
+        gaugeReadout.lateralAcceleration =
+          (aircraft.wrench.force.y - gaugeGravityBody.y) / mass;
+        gaugeReadout.longitudinalAcceleration =
+          (aircraft.wrench.force.x - gaugeGravityBody.x) / mass;
+        gauges.update(telemetry, gaugeReadout, frameDt);
+      }
 
       // The tracers, the bursts and the four muzzle flashes.
       effects.update(armament, frameDt);

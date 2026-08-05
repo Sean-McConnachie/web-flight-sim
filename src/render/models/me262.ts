@@ -970,7 +970,21 @@ interface CanopyStation {
 const CANOPY_CROWN_POINTS = 13;
 const CANOPY_POINTS = 20;
 
-function canopyRing(station: CanopyStation): Vector3[] {
+/**
+ * Build one cross section of the canopy.
+ *
+ * `crownOnly` leaves out the sill line and gives the crown arc alone. A hood is
+ * OPEN at the bottom, so the glass shell and every frame hoop must use that
+ * form. A closed section carries a flat glass floor at the sill and a solid bar
+ * across the cockpit, and the pilot then reads the panel through both. The hoop
+ * at station 3.76 belongs to the sliding hood, so such a bar would also sweep
+ * through the chest of the pilot when the hood opens.
+ *
+ * The dorsal spine behind the hood is a solid fairing, not a hood. It keeps the
+ * closed section, because the sill line is its floor and the fuselage skin
+ * covers that floor.
+ */
+function canopyRing(station: CanopyStation, crownOnly = false): Vector3[] {
   const z = aft(station.t);
   const ring: Vector3[] = [];
   const shape = (value: number): number =>
@@ -989,6 +1003,8 @@ function canopyRing(station: CanopyStation): Vector3[] {
       ),
     );
   }
+  if (crownOnly) return ring;
+
   const floorPoints = CANOPY_POINTS - CANOPY_CROWN_POINTS;
   for (let i = 1; i <= floorPoints; i++) {
     const u = i / (floorPoints + 1);
@@ -1042,7 +1058,12 @@ function canopyAt(t: number): CanopyStation {
 
 /**
  * Build one frame hoop of the canopy. The hoop is a thin band that follows the
- * canopy section and stands a little proud of the glass.
+ * crown arc and stands a little proud of the glass.
+ *
+ * The band runs from the starboard sill over the crown to the port sill and it
+ * stops there, because a hoop of a real hood stops at the sill. `closedRings`
+ * closes the rectangular cross section of the band. `closedProfile` stays off,
+ * so the band gets no bar across the cockpit.
  */
 function canopyHoop(t: number, halfDepth: number, thickness: number): BufferGeometry {
   const inner = canopyAt(t);
@@ -1053,12 +1074,12 @@ function canopyHoop(t: number, halfDepth: number, thickness: number): BufferGeom
     sillY: inner.sillY - thickness,
   };
   const rings = [
-    canopyRing({ ...outer, t: t - halfDepth }),
-    canopyRing({ ...outer, t: t + halfDepth }),
-    canopyRing({ ...inner, t: t + halfDepth }),
-    canopyRing({ ...inner, t: t - halfDepth }),
+    canopyRing({ ...outer, t: t - halfDepth }, true),
+    canopyRing({ ...outer, t: t + halfDepth }, true),
+    canopyRing({ ...inner, t: t + halfDepth }, true),
+    canopyRing({ ...inner, t: t - halfDepth }, true),
   ];
-  return loft(rings, { closedProfile: true, closedRings: true });
+  return loft(rings, { closedProfile: false, closedRings: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -1359,12 +1380,12 @@ function buildFuselage(context: BuildContext): void {
   const geometry = loft(rings, { closedProfile: true, capStart: true, capEnd: true });
   attach(context, context.root, geometry, context.materials.airframe, 'fuselage');
 
-  // The fairing behind the hood carries the spine down into the tail.
-  const spine = loft(SPINE_STATIONS.map(canopyRing), {
-    closedProfile: true,
-    capStart: true,
-    capEnd: true,
-  });
+  // The fairing behind the hood carries the spine down into the tail. The
+  // fairing is solid, so it keeps the closed section.
+  const spine = loft(
+    SPINE_STATIONS.map((station) => canopyRing(station)),
+    { closedProfile: true, capStart: true, capEnd: true },
+  );
   attach(context, context.root, spine, context.materials.airframe, 'dorsal-spine');
 }
 
@@ -1638,11 +1659,17 @@ function buildNacelle(context: BuildContext, side: 1 | -1): void {
 }
 
 function buildCanopy(context: BuildContext, pivots: Partial<Me262Pivots>): void {
+  // Every part of the hood shell uses the crown arc alone. Read canopyRing.
+  const crownRing = (station: CanopyStation): Vector3[] => canopyRing(station, true);
+
   // --- The windscreen is fixed. It holds the three flat front panels. ---
-  const windscreen = loft(CANOPY_STATIONS.slice(0, 3).map(canopyRing), {
-    closedProfile: true,
+  // `capStart` closes the first ring. The fan runs over the sill chord, and
+  // that fan IS the flat front panel of the windscreen. The shell keeps no
+  // `capEnd`, because that disc would stand at station 3.74, straight in the
+  // forward view of the pilot.
+  const windscreen = loft(CANOPY_STATIONS.slice(0, 3).map(crownRing), {
+    closedProfile: false,
     capStart: true,
-    capEnd: true,
   });
   attach(context, context.root, windscreen, context.materials.glass, 'windscreen-glass', {
     castShadow: false,
@@ -1676,9 +1703,11 @@ function buildCanopy(context: BuildContext, pivots: Partial<Me262Pivots>): void 
     new Vector3(0, 1, 0),
   );
 
-  const hood = loft(CANOPY_STATIONS.slice(2).map(canopyRing), {
-    closedProfile: true,
-    capStart: true,
+  // The hood carries no `capStart` for the same reason as the windscreen. Its
+  // `capEnd` sits at station 5.05, behind the head of the pilot, where the
+  // dorsal spine meets the hood.
+  const hood = loft(CANOPY_STATIONS.slice(2).map(crownRing), {
+    closedProfile: false,
     capEnd: true,
   });
   attach(context, pivot, hood, context.materials.glass, 'canopy-glass', { castShadow: false });
