@@ -16,9 +16,10 @@
  * plays them. A voice that is never connected, a gain that is never written and
  * an oscillator that never starts all pass that suite.
  *
- * This tool taps the master bus with an AnalyserNode and MEASURES the level
- * that comes out of it. A silent engine fails here. A gun that fires and makes
- * no report fails here. Nothing else in the project can catch either fault.
+ * This tool taps the master bus with a meter that runs on the AUDIO THREAD and
+ * MEASURES the level that comes out of it. A silent engine fails here. A gun
+ * that fires and makes no report fails here. Nothing else in the project can
+ * catch either fault.
  *
  * It is a test and not a demonstration. Every check below stops the run with an
  * error when the level is wrong.
@@ -27,8 +28,8 @@
  * WHAT HEADLESS CHROME DOES WITH THE SOUND
  *
  * There is no audio device, so Chrome runs the graph into a null sink. The
- * audio thread still runs at the real sample rate, the analyser still sees the
- * samples, and `currentTime` still advances. The measurement is therefore real.
+ * audio thread still runs at the real sample rate, the meter still sees every
+ * sample, and `currentTime` still advances. The measurement is therefore real.
  * Nobody hears it, which is the point of a headless run.
  *
  * `--autoplay-policy=no-user-gesture-required` takes the unlock out of the way.
@@ -185,9 +186,9 @@ async function main() {
   console.log(`backend: ${backend}`);
 
   // --- The tap -------------------------------------------------------------
-  // The analyser hangs off the MASTER GAIN, which is what every voice connects
-  // to. That is the mix before the compressor, so the numbers below are what
-  // the voices made and not what the compressor left of it.
+  // The meter hangs off the MASTER GAIN, which is what every voice connects to.
+  // That is the mix before the compressor, so the numbers below are what the
+  // voices made and not what the compressor left of it.
   //
   // IT ALSO FORCES A KNOWN VOLUME AND MUTE. src/audio/context.ts keeps both in
   // local storage so they survive a reload, and this profile directory survives
@@ -197,21 +198,75 @@ async function main() {
   //
   // Full volume, and not the 0.7 a first visit gets, so two runs are
   // comparable.
-  const tapped = await evaluate(`(() => {
+  //
+  // THE METER RUNS ON THE AUDIO THREAD, in an `AudioWorkletNode`. An
+  // `AnalyserNode` cannot do this job here and the reason is worth writing
+  // down.
+  //
+  // An analyser holds a WINDOW of recent history, and something on the main
+  // thread has to read it. This main thread is blocked for most of every
+  // frame, so a read lands one time per frame and no more. The largest window
+  // the API allows is 32768 samples, which is 683 ms. On the live site a frame
+  // takes 1400 ms. The window therefore cannot reach back to the last frame,
+  // and the guns fire in a burst that lasts 140 ms, so every read fell in the
+  // silence between the bursts and the guns read 26 dB too quiet.
+  //
+  // A worklet sees EVERY sample. It keeps a running peak and a running mean
+  // square, and the main thread asks for them whenever it gets a turn. No
+  // sample can fall between two reads, whatever the frame rate does.
+  const tapped = await evaluate(`(async () => {
     const bus = window.sim.sound.bus;
     if (bus === null) return 'no Web Audio in this browser';
     bus.muted = false;
     bus.volume = 1;
-    const analyser = bus.context.createAnalyser();
-    // 32768 samples is 683 ms of history at 48 kHz, and it is the largest the
-    // API allows. The window has to be LONG here. A software rasterizer only
-    // lets this loop read once per frame, a frame is near a second, and a gun
-    // report lasts 140 ms. A short window falls between the reports and finds
-    // the tail of one, which reads as a gun that barely sounds.
-    analyser.fftSize = 32768;
-    bus.destination.connect(analyser);
-    window.__tap = { analyser, buffer: new Float32Array(analyser.fftSize) };
-    return bus.context.state;
+    const context = bus.context;
+
+    const code = \`
+      class Meter extends AudioWorkletProcessor {
+        constructor() {
+          super();
+          this.peak = 0; this.sum = 0; this.count = 0;
+          this.port.onmessage = () => {
+            this.port.postMessage({
+              peak: this.peak,
+              rms: this.count > 0 ? Math.sqrt(this.sum / this.count) : 0,
+            });
+            this.peak = 0; this.sum = 0; this.count = 0;
+          };
+        }
+        process(inputs) {
+          const channel = inputs[0] && inputs[0][0];
+          if (channel !== undefined) {
+            for (let i = 0; i < channel.length; i++) {
+              const v = channel[i];
+              const m = v < 0 ? -v : v;
+              if (m > this.peak) this.peak = m;
+              this.sum += v * v;
+              this.count++;
+            }
+          }
+          return true;
+        }
+      }
+      registerProcessor('hfs-meter', Meter);
+    \`;
+    const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }));
+    await context.audioWorklet.addModule(url);
+    const meter = new AudioWorkletNode(context, 'hfs-meter');
+    bus.destination.connect(meter);
+    // A node whose output reaches nothing may never be pulled. A silent gain to
+    // the speakers guarantees the graph runs it and adds nothing audible.
+    const sink = context.createGain();
+    sink.gain.value = 0;
+    meter.connect(sink);
+    sink.connect(context.destination);
+
+    window.__readMeter = () =>
+      new Promise((done) => {
+        meter.port.onmessage = (event) => done(event.data);
+        meter.port.postMessage('read');
+      });
+    return context.state;
   })()`);
   if (tapped !== 'running') {
     throw new Error(`The audio context is "${tapped}". It must be running to measure anything.`);
@@ -243,31 +298,22 @@ async function main() {
    * test asked for.
    */
   async function measure(ms = 700, hold = '') {
-    const reads = Math.max(Math.round(ms / 60), 8);
+    const steps = Math.max(Math.round(ms / 60), 8);
     return await evaluate(`(async () => {
-      const { analyser, buffer } = window.__tap;
-      const values = [];
-      let sampleMax = 0;
-      for (let i = 0; i < ${reads}; i++) {
+      // Throw away everything the meter holds from before the window.
+      await window.__readMeter();
+      for (let i = 0; i < ${steps}; i++) {
         ${hold}
-        analyser.getFloatTimeDomainData(buffer);
-        let sum = 0;
-        for (let j = 0; j < buffer.length; j++) {
-          const v = buffer[j];
-          sum += v * v;
-          const m = v < 0 ? -v : v;
-          if (m > sampleMax) sampleMax = m;
-        }
-        values.push(Math.sqrt(sum / buffer.length));
         await new Promise((r) => setTimeout(r, 25));
       }
-      const tail = values.slice(Math.floor(values.length * 0.5));
+      const m = await window.__readMeter();
       return {
-        peak: Math.max(...values),
-        steady: tail.reduce((a, b) => a + b, 0) / tail.length,
-        // The largest single sample seen. A continuous source and a one shot
-        // need different measures, and this is the one a one shot answers.
-        sampleMax,
+        // The mean square over the WHOLE window. It is the right measure for a
+        // source that runs all the time.
+        rms: m.rms,
+        // The largest single sample in the window. It is the right measure for
+        // a one shot, which a mean over a window mostly full of gaps buries.
+        sampleMax: m.peak,
       };
     })()`);
   }
@@ -353,8 +399,8 @@ async function main() {
   const silence = await measure(400);
   check(
     'a parked aircraft with the engines off is silent',
-    silence.steady < 0.002,
-    `${dbfs(silence.steady)}`,
+    silence.rms < 0.002,
+    `${dbfs(silence.rms)}`,
   );
 
   // --- 2. The wind ---------------------------------------------------------
@@ -364,8 +410,8 @@ async function main() {
   await metrics('at 900 km/h');
   check(
     'the rush of air at 900 km/h is loud on its own',
-    fast.steady > 0.03,
-    `${dbfs(fast.steady)}, against ${dbfs(silence.steady)} at rest`,
+    fast.rms > 0.03,
+    `${dbfs(fast.rms)}, against ${dbfs(silence.rms)} at rest`,
   );
 
   // --- 3. The wind follows the speed ---------------------------------------
@@ -375,8 +421,8 @@ async function main() {
   const half = await measurePlaced(125, 1400);
   check(
     'halving the speed takes the wind a long way down',
-    half.steady < fast.steady * 0.5,
-    `${dbfs(half.steady)} at 450 km/h, against ${dbfs(fast.steady)} at 900`,
+    half.rms < fast.rms * 0.5,
+    `${dbfs(half.rms)} at 450 km/h, against ${dbfs(fast.rms)} at 900`,
   );
 
   // --- 4. The guns ---------------------------------------------------------
@@ -418,7 +464,7 @@ async function main() {
   await pressKey('KeyM', 'm');
   await wait(SHORT_MS);
   const muted = await measure(400, muteHold);
-  check('the M key mutes everything', muted.peak < 0.001, `${dbfs(muted.peak)}`);
+  check('the M key mutes everything', muted.sampleMax < 0.001, `${dbfs(muted.sampleMax)}`);
   const buttonSaysOff = await evaluate(
     `document.querySelector('.hfs-sound-open').textContent`,
   );
@@ -433,8 +479,8 @@ async function main() {
   const unmuted = await measure(500, muteHold);
   check(
     'the M key brings the sound back',
-    unmuted.steady > 0.01,
-    `${dbfs(unmuted.steady)}`,
+    unmuted.rms > 0.01,
+    `${dbfs(unmuted.rms)}`,
   );
 
   // --- 6. The engines ------------------------------------------------------
@@ -467,8 +513,8 @@ async function main() {
   if (cranking !== null) {
     check(
       'the Riedel starter is heard while it cranks the rotor',
-      cranking.steady > parked.steady * 3,
-      `${dbfs(cranking.steady)} on the starter, against ${dbfs(parked.steady)} parked`,
+      cranking.rms > parked.rms * 3,
+      `${dbfs(cranking.rms)} on the starter, against ${dbfs(parked.rms)} parked`,
     );
   } else {
     check('the Riedel starter is heard while it cranks the rotor', false, 'the crank was missed');
@@ -478,8 +524,8 @@ async function main() {
   const idle = await measure();
   check(
     'the engine at idle makes a sound',
-    idle.steady > parked.steady * 4,
-    `${dbfs(idle.steady)} at ${rpm.toFixed(0)} rpm, against ${dbfs(parked.steady)} with it off`,
+    idle.rms > parked.rms * 4,
+    `${dbfs(idle.rms)} at ${rpm.toFixed(0)} rpm, against ${dbfs(parked.rms)} with it off`,
   );
 
   // --- 7. Power ------------------------------------------------------------
@@ -522,8 +568,8 @@ async function main() {
   const loud = await measure(500);
   check(
     'the engine gets much louder with power',
-    loud.steady > idle.steady * 2.5,
-    `${dbfs(loud.steady)} at ${power.rpm.toFixed(0)} rpm, against ${dbfs(idle.steady)} at idle`,
+    loud.rms > idle.rms * 2.5,
+    `${dbfs(loud.rms)} at ${power.rpm.toFixed(0)} rpm, against ${dbfs(idle.rms)} at idle`,
   );
 
   // --- 7. Nothing threw ----------------------------------------------------

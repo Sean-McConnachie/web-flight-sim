@@ -266,8 +266,16 @@ npx vite preview --port 4173 --strictPort &
 npm run audio-check
 ```
 
-`tools/audio-check.mjs` starts headless Chrome, taps the master bus with an
-`AnalyserNode`, and measures the level that comes out of it.
+`tools/audio-check.mjs` starts headless Chrome and meters the master bus from
+an `AudioWorkletNode`.
+
+The meter has to run on the AUDIO THREAD, and that is not a detail. An
+`AnalyserNode` holds a window of recent history, and something on the main
+thread has to read it. That thread is blocked for most of every frame here, so
+a read lands one time per frame. The largest window the API allows is 683 ms.
+A frame can take 1400 ms, so the window cannot reach back to the last frame.
+The guns fire in bursts of 140 ms, and every read fell in the silence between
+them. A worklet sees every sample instead, whatever the frame rate does.
 
 This tool exists because the unit tests cannot catch a whole class of fault. A
 voice that is never connected, a gain that is never written and an oscillator

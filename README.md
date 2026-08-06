@@ -85,11 +85,12 @@ Headless Chrome runs the WebGL 2 path with a software rasterizer. The pictures
 therefore show the layout and the instruments. They do NOT show what a real card
 draws.
 
-`npm run audio-check` measures the sound in that same browser. It taps the
-master bus with an `AnalyserNode` and reads the level back. A voice that is
-never connected and an oscillator that never starts both pass the unit tests and
-both fail here. It runs the real engine start drill, fires the guns, and presses
-M for silence. `docs/audio.md` lists the three faults it caught.
+`npm run audio-check` measures the sound in that same browser. It meters the
+master bus from an `AudioWorkletNode`, which runs on the audio thread and sees
+every sample. A voice that is never connected and an oscillator that never
+starts both pass the unit tests and both fail here. It runs the real engine
+start drill, fires the guns, and presses M for silence. `docs/audio.md` lists
+the five faults it caught.
 
 ## Running on a hybrid graphics laptop
 
