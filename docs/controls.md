@@ -83,6 +83,7 @@ gives.
 | Space | fire the cannon, held |
 | H, or Escape | the controls menu |
 | U | hide or show every overlay panel |
+| M | mute the sound, or bring it back |
 | R | respawn on the runway |
 | F2 | the developer free camera |
 | F3 | the debug level |
@@ -199,8 +200,8 @@ U stands for the USER INTERFACE it hides. The action held H first, and the menu
 then took that key. A pilot looks for help far more often than a pilot clears
 the glass. U carries no other action and it needs no modifier.
 
-The CONTROLS button stays on the screen through this action. Every other panel
-goes.
+The CONTROLS button and the SOUND button both stay on the screen through this
+action. Every other panel goes.
 
 It is a separate switch from the debug level of F3. The debug level chooses
 WHICH instruments run. This switch chooses whether any of them draws, so the
@@ -215,6 +216,34 @@ bar leaves the bottom edge, which belongs to the pad, and stands at the top left
 in two columns. It only moves while the debug overlay and the chart are both
 off, because those two own the corners it moves into. `Hud.debugPanelsVisible`
 carries that answer from `src/main.ts`.
+
+## The sound
+
+M raises the `toggleSound` action, which mutes the sound and brings it back. It
+is the key every media player in the world mutes on, so it is the first key a
+person tries.
+
+The SOUND button stands beside the CONTROLS button in every view. It exists for
+three reasons.
+
+A phone has no M key while the simulator runs.
+
+A browser holds every `AudioContext` shut until the person acts, and a page that
+starts in silence looks broken rather than muted. The button says which of the
+two it is, and a click on it is exactly the act the browser waits for.
+
+A person who lands on a page that makes a noise looks for the way to stop it
+before anything else. That control must be visible.
+
+The button reads `ENABLE SOUND` while the browser holds the context shut,
+`SOUND ON` while it runs, and `SOUND OFF` after a mute. The controls menu
+carries the master volume on a slider. Both settings survive a reload.
+
+The mute is on a key and on a button because a pilot who wants silence wants it
+at once. The volume is in a panel because it is set one time and then left
+alone.
+
+`docs/audio.md` says what every sound is made of.
 
 ## Response curves and dead zones
 
@@ -403,16 +432,16 @@ gamepad, keyboard and touch readers
                  -> control deflections, in radians
 ```
 
-`ControlInput` carries 8 numbers and 13 booleans. The axes run from -1 to 1,
+`ControlInput` carries 8 numbers and 14 booleans. The axes run from -1 to 1,
 apart from the throttle and the two brakes, which run from 0 to 1. Positive
 pitch raises the nose, positive roll rolls right, and positive yaw moves the
 nose right.
 
 `AircraftInput` is a strict subset of `ControlInput`, field for field, so
-`src/main.ts` passes one straight in as the other with no conversion. The eleven
+`src/main.ts` passes one straight in as the other with no conversion. The twelve
 fields the aircraft does not read go to the camera rig and the guns. They also go
-to the controls menu, the panels, the debug level and the respawn. Two of those
-eleven fields go to nothing at all, and both are trim.
+to the controls menu, the panels, the debug level, the respawn and the mute. Two
+of those twelve fields go to nothing at all, and both are trim.
 
 ## Known gaps
 

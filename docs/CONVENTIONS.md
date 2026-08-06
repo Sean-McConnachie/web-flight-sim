@@ -148,8 +148,14 @@ The reason: the flight test harness runs the whole flight model in Node with no
 GPU and no browser. If the physics touches the renderer, that harness cannot run.
 A test that cannot run cannot prove the model is correct.
 
-Files under `src/render/`, `src/ui/`, and `src/input/` may use the renderer and
-the browser. They must not contain physics.
+Files under `src/render/`, `src/ui/`, `src/input/`, and `src/audio/` may use the
+renderer and the browser. They must not contain physics.
+
+`src/audio/voices.ts` is one file inside that group that keeps the rule of the
+group above it. It holds every law of the sound and it names no browser API, so
+`test/unit/audio-voices.test.ts` runs it in Node. The reason is the same reason:
+a law that no test can measure is a law nobody can check. Read the module
+comment of that file before you add a sound.
 
 ---
 

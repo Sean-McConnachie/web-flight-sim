@@ -20,6 +20,7 @@ separation rule shapes every choice here.
 | `src/render/` | renderer, cameras, models, sky, clouds, particles, post processing |
 | `src/ui/` | head up display, cockpit gauges, controls menu, debug overlay, telemetry graph |
 | `src/input/` | keyboard, gamepad, the on screen touch pad, the binding table |
+| `src/audio/` | the sound of the engines, the airframe, the gear and the guns |
 | `src/weapons/` | the MK 108 cannon, ballistics, ground targets |
 
 `src/main.ts` builds every part and joins them. It is the only file that knows
@@ -47,10 +48,15 @@ module or the render model. It therefore repeats all four numbers, each with a
 comment naming the file they come from. The `AircraftInput` interface is a hand
 kept subset of `ControlInput` of `src/input/bindings.ts` for the same reason.
 
-`src/render/`, `src/ui/` and `src/input/` may use the renderer and the browser.
-They hold no physics. Two lines in `src/render/particles.ts` read the aircraft
-state and the gear leg positions. The rule allows that direction, because the
-arrow points from the renderer toward the physics and never back.
+`src/render/`, `src/ui/`, `src/input/` and `src/audio/` may use the renderer and
+the browser. They hold no physics. Two lines in `src/render/particles.ts` read
+the aircraft state and the gear leg positions, and `src/audio/sound.ts` reads
+the engines, the gear and the contact points. The rule allows that direction,
+because the arrow points from the renderer toward the physics and never back.
+
+`src/audio/voices.ts` is the one file in that group that keeps the stricter
+rule. It holds every law of the sound and it names no browser API, so its unit
+test runs in Node. `docs/audio.md` says why.
 
 ## The three coordinate frames
 
@@ -255,6 +261,8 @@ derivation in the header.
 model.
 8. The renderer last: `src/render/renderer.ts`, then `src/world/scene.ts`, then
 `src/render/postfx.ts`.
+9. `src/audio/voices.ts` with `docs/audio.md`. It stands on its own and it needs
+none of the above.
 
 Read `docs/CONVENTIONS.md` section 6a before you debug anything on the render
 side. It lists the platform faults that cost earlier work several hours each.
@@ -262,7 +270,8 @@ side. It lists the platform faults that cost earlier work several hours each.
 ## Known gaps
 
 **No shutdown path.** See the startup section above. Nothing calls `dispose`,
-and `src/main.ts` adds three window listeners that it never removes.
+and `src/main.ts` adds three window listeners that it never removes. The sound
+system adds an `AudioContext` and three more listeners to that list.
 
 **Two size paths.** `post.setSize` reads the drawing buffer size of the canvas
 and `renderer.setSize` reads the layout size. The two agree today. They would

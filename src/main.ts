@@ -39,6 +39,7 @@ import {
   RUDDER_LIMIT,
   createAircraft,
 } from '@/aircraft/aircraft';
+import { createSoundSystem } from '@/audio/sound';
 import { createLoop } from '@/core/loop';
 import type { InputSystem } from '@/input/bindings';
 import { createInputSystem } from '@/input/bindings';
@@ -67,6 +68,7 @@ import { createDebugOverlay } from '@/ui/debug-overlay';
 import type { CockpitGauges } from '@/ui/gauges';
 import { createMe262Gauges } from '@/ui/gauges';
 import { createHud } from '@/ui/hud';
+import { createSoundButton } from '@/ui/sound-button';
 import { createTelemetryGraph } from '@/ui/telemetry-graph';
 import { createWorld } from '@/world/scene';
 
@@ -425,8 +427,27 @@ async function main(): Promise<void> {
     dynamicPressure: () => aircraft.state.totals.dynamicPressure,
   });
 
+  // --- The sound -----------------------------------------------------------
+  // BEAD huv. Every sound is built from the flight state with the Web Audio
+  // API. The project ships no audio file, so the sound follows the model in the
+  // same way the picture does. `bus` is null when the browser has no Web Audio,
+  // and every call below is then a no-op.
+  //
+  // A browser holds the context shut until the pilot presses something. The bus
+  // resumes itself on the first key or the first touch, so a pilot who flies
+  // never reads an instruction. The SOUND button says so for one who does not.
+  const sound = createSoundSystem();
+  const soundBus = sound.bus;
+  const soundButton =
+    soundBus === null ? null : createSoundButton(overlay, soundBus);
+  // The airframe, an engine or a tire let go. The banner below already prints
+  // the message, and this is the bang that goes with it.
+  aircraft.events.on('failure', () => {
+    sound.failure();
+  });
+
   // --- The controls menu ---------------------------------------------------
-  // BEAD dgi. Escape, F1 and the Start button raise `toggleMenu`, and until
+  // BEAD dgi. Escape, H and the Start button raise `toggleMenu`, and until
   // this bead nothing read it. The panel builds every row from the binding
   // table, so the list a pilot reads is the map the code runs.
   const menu = createControlsMenu(overlay, {
@@ -434,6 +455,20 @@ async function main(): Promise<void> {
     setTouchVisible: (value: boolean) => {
       touch.visible = value;
     },
+    // The panel carries the volume. The mute stays on the SOUND button and on
+    // the M key, because silence is something a pilot wants at once.
+    sound:
+      soundBus === null
+        ? undefined
+        : {
+            volume: () => soundBus.volume,
+            setVolume: (value: number) => {
+              soundBus.volume = value;
+            },
+            setMuted: (value: boolean) => {
+              soundBus.muted = value;
+            },
+          },
   });
 
   // --- The cameras -------------------------------------------------------
@@ -581,6 +616,7 @@ async function main(): Promise<void> {
   let pendingTogglePanels = false;
   let pendingRespawn = false;
   let pendingFreeCamera = false;
+  let pendingToggleSound = false;
 
   // --- The divergence banner ---------------------------------------------
   // The flight model reports a state that is no longer a finite number. It then
@@ -671,6 +707,7 @@ async function main(): Promise<void> {
       if (input.state.toggleHud) pendingTogglePanels = true;
       if (input.state.respawn) pendingRespawn = true;
       if (input.state.toggleFreeCamera) pendingFreeCamera = true;
+      if (input.state.toggleSound) pendingToggleSound = true;
       previousPosition.copy(aircraft.state.body.position);
       previousOrientation.copy(aircraft.state.body.orientation);
 
@@ -685,6 +722,13 @@ async function main(): Promise<void> {
       effects.collect(armament);
 
       aircraft.fixedUpdate(readInput(input), dt);
+
+      // The sound reads the step AFTER the step ran. A surge bang, a round
+      // that left a barrel and a shell that landed all last exactly one step,
+      // and a frame that holds four steps would miss three of them. Section 3
+      // of src/audio/sound.ts says why this call is separate from the one in
+      // the frame below.
+      sound.fixedUpdate(aircraft, armament);
     },
 
     render(alpha: number, frameDt: number): void {
@@ -731,6 +775,13 @@ async function main(): Promise<void> {
       if (pendingFreeCamera) {
         pendingFreeCamera = false;
         toggleFreeCamera();
+      }
+      if (pendingToggleSound) {
+        pendingToggleSound = false;
+        // The button holds the rule, because the same press has to unlock a
+        // context the browser is holding shut AND toggle the mute, and only
+        // one of those two is correct on any one press.
+        soundButton?.toggle();
       }
 
       if (useFreeCamera) {
@@ -833,13 +884,23 @@ async function main(): Promise<void> {
       // so the frame draws the positions of this frame.
       particles.update(aircraft, armament, renderPosition, renderOrientation, frameDt);
       // The display belongs to the outside views, and the pilot can clear every
-      // panel with the H key or the PANELS button. See `panelsVisible`.
+      // panel with the U key or the PANELS button. See `panelsVisible`.
       hud.visible = panelsVisible && rig.mode !== 'cockpit';
+      // The controls panel covers the whole picture. The CONTROLS button hides
+      // itself while it is open, and the SOUND button beside it does the same.
+      // The menu can also close from its own scrim, so this reads the state
+      // every frame instead of following the toggle.
+      if (soundButton !== null) soundButton.hidden = menu.visible;
       hud.update(telemetry, readout);
 
       // The pad holds no lever of its own, so the bar of the throttle rocker
       // reads the lever the binding table integrated.
       touch.setThrottle(input.state.throttle);
+
+      // The sound reads the pose the frame DREW and the camera the frame will
+      // draw from, so the distance, the pan and the Doppler shift all belong to
+      // this frame and not to the last one.
+      sound.update(aircraft, camera, renderPosition, inCockpit, frameDt);
 
       world.update(frameDt, camera.position);
       post.render();
@@ -864,6 +925,7 @@ async function main(): Promise<void> {
     armament,
     particles,
     post,
+    sound,
   };
 
   respawn();

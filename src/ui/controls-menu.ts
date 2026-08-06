@@ -152,6 +152,11 @@ export const ACTION_INFO: Record<keyof ControlInput, ActionInfo> = {
   toggleHud: { label: 'Hide or show every overlay panel', group: 'simulator' },
   toggleDebug: { label: 'Debug level: off, numbers, force arrows', group: 'simulator' },
   respawn: { label: 'Put the aircraft back on the runway', group: 'simulator' },
+  toggleSound: {
+    label: 'Mute the sound, or bring it back',
+    group: 'simulator',
+    note: 'A browser holds the sound shut until you press a key or touch the screen. The SOUND button at the top left says which state it is in.',
+  },
 };
 
 /** Controls that do not come through the binding table. See part 1. */
@@ -440,6 +445,24 @@ const CSS = `
   white-space: nowrap;
 }
 .hfs-menu-button:hover { background: rgba(120, 200, 150, 0.3); }
+/* The master volume. It only appears when the browser can make a sound. */
+.hfs-menu-volume {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  color: #79b795;
+  white-space: nowrap;
+}
+.hfs-menu-volume input {
+  pointer-events: auto;
+  touch-action: manipulation;
+  cursor: pointer;
+  width: 110px;
+  accent-color: #78c896;
+}
+.hfs-menu-volume span { min-width: 34px; text-align: right; color: #d8ffe6; }
 .hfs-menu-group {
   margin-top: 14px;
   color: #79b795;
@@ -541,6 +564,23 @@ function fillCell(cell: HTMLDivElement, chips: readonly string[]): void {
   }
 }
 
+/**
+ * The part of the sound the menu can reach.
+ *
+ * It is the master volume and nothing else. The mute lives on the SOUND button
+ * of src/ui/sound-button.ts and on the M key, because a pilot who wants silence
+ * wants it NOW and must not have to open a panel to get it. A volume is the
+ * opposite: it is set one time and then left alone, so a panel is the right
+ * home for it.
+ */
+export interface MenuSoundControls {
+  /** 0 to 1. */
+  volume(): number;
+  setVolume(value: number): void;
+  /** A drag off zero must also clear the mute, or the slider does nothing. */
+  setMuted(value: boolean): void;
+}
+
 export interface ControlsMenuOptions {
   /** Reports whether the on screen pad is on now. */
   touchVisible(): boolean;
@@ -548,6 +588,8 @@ export interface ControlsMenuOptions {
   setTouchVisible(value: boolean): void;
   /** The map to print. DEFAULT_BINDINGS when this is absent. */
   bindings?: readonly Binding[];
+  /** The master volume. The menu draws no slider when this is absent. */
+  sound?: MenuSoundControls;
 }
 
 /**
@@ -581,6 +623,27 @@ export function createControlsMenu(
   const title = makeDiv('hfs-menu-title', head);
   title.textContent = 'CONTROLS';
   const actions = makeDiv('hfs-menu-actions', head);
+
+  // --- The master volume ---------------------------------------------------
+  const sound = options.sound;
+  let volumeSlider: HTMLInputElement | null = null;
+  let volumeReadout: HTMLSpanElement | null = null;
+  if (sound !== undefined) {
+    const box = makeDiv('hfs-menu-volume', actions);
+    const label = document.createElement('label');
+    label.textContent = 'VOLUME';
+    box.appendChild(label);
+    volumeSlider = document.createElement('input');
+    volumeSlider.type = 'range';
+    volumeSlider.min = '0';
+    volumeSlider.max = '100';
+    volumeSlider.step = '1';
+    volumeSlider.value = String(Math.round(sound.volume() * 100));
+    label.appendChild(volumeSlider);
+    volumeReadout = document.createElement('span');
+    volumeReadout.textContent = `${volumeSlider.value}%`;
+    box.appendChild(volumeReadout);
+  }
 
   const padButton = document.createElement('button');
   padButton.type = 'button';
@@ -640,6 +703,12 @@ export function createControlsMenu(
     openButton.style.display = visible ? 'none' : '';
     if (visible) {
       refreshPadButton();
+      // The M key and the SOUND button both change the volume behind the
+      // panel, so the slider reads the value again every time it appears.
+      if (sound !== undefined && volumeSlider !== null) {
+        volumeSlider.value = String(Math.round(sound.volume() * 100));
+        if (volumeReadout !== null) volumeReadout.textContent = `${volumeSlider.value}%`;
+      }
       scrim.scrollTop = 0;
     }
   }
@@ -668,10 +737,21 @@ export function createControlsMenu(
     if (event.target === scrim) setVisible(false);
   };
 
+  // A drag of the slider is a request to hear something, so it clears the mute
+  // as well. Without that the pilot moves the slider and nothing happens.
+  const onVolume = (): void => {
+    if (sound === undefined || volumeSlider === null) return;
+    const value = Number(volumeSlider.value) / 100;
+    sound.setVolume(value);
+    if (value > 0) sound.setMuted(false);
+    if (volumeReadout !== null) volumeReadout.textContent = `${volumeSlider.value}%`;
+  };
+
   padButton.addEventListener('click', onPad);
   closeButton.addEventListener('click', onClose);
   openButton.addEventListener('click', onOpen);
   scrim.addEventListener('click', onScrim);
+  volumeSlider?.addEventListener('input', onVolume);
 
   return {
     get visible(): boolean {
@@ -691,6 +771,7 @@ export function createControlsMenu(
       closeButton.removeEventListener('click', onClose);
       openButton.removeEventListener('click', onOpen);
       scrim.removeEventListener('click', onScrim);
+      volumeSlider?.removeEventListener('input', onVolume);
       openButton.remove();
       scrim.remove();
     },

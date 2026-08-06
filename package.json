@@ -14,7 +14,8 @@
     "test:flight": "vitest run test/flight",
     "test:watch": "vitest",
     "lint:ste": "node tools/ste-lint.mjs docs README.md",
-    "screenshots": "node tools/screenshot.mjs"
+    "screenshots": "node tools/screenshot.mjs",
+    "audio-check": "node tools/audio-check.mjs"
   },
   "dependencies": {
     "three": "0.185.1"

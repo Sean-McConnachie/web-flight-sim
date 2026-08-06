@@ -38,12 +38,36 @@ it.
 ![The virtual cockpit, with the gunsight and the instrument
 panel](docs/images/cockpit.jpg)
 
+## Turn the sound up
+
+The simulator ships no audio file. Every sound is built at run time out of the
+same numbers the flight model holds.
+
+The engine is three sources and not one, because a turbojet is three sources.
+The exhaust roar follows the eighth power of the jet velocity, which is
+Lighthill's law. It is therefore everything at full power and nothing at idle.
+The combustion follows the fuel flow, and it is what is left at idle. The
+compressor tone is the blade passing frequency of the first stage. It reads
+3.9 kHz at 8700 rpm and it sweeps down with the rotor.
+
+There is no pitch calculation anywhere in the sound code. The aircraft plays
+through one delay line, which holds the distance over the speed of sound. A
+delay line that ramps IS the Doppler shift. That one number also makes a fly by
+arrive late. The air absorption then turns a distant jet into a rumble.
+
+The buffet matters more than it sounds. This aircraft has no stick shaker and no
+stall warning horn. The only warning before the wing lets go is the airframe
+starting to shake. A screen cannot shake a seat. Now the sound can.
+
+Press M to mute, or use the SOUND button. `docs/audio.md` gives every law and
+its source.
+
 ## Run it
 
 ```sh
 npm install          # install the dependencies, once
 npm run dev          # start the Vite dev server on port 5173
-npm run test:unit    # 873 unit tests
+npm run test:unit    # 912 unit tests
 npm run test:flight  # 26 flight tests, 31 measurements
 npm run typecheck    # the TypeScript compiler, no emit
 npm run lint:ste     # check the prose of every document
@@ -60,6 +84,12 @@ control does not answer, so the pictures cannot go stale in silence.
 Headless Chrome runs the WebGL 2 path with a software rasterizer. The pictures
 therefore show the layout and the instruments. They do NOT show what a real card
 draws.
+
+`npm run audio-check` measures the sound in that same browser. It taps the
+master bus with an `AnalyserNode` and reads the level back. A voice that is
+never connected and an oscillator that never starts both pass the unit tests and
+both fail here. It runs the real engine start drill, fires the guns, and presses
+M for silence. `docs/audio.md` lists the three faults it caught.
 
 ## Running on a hybrid graphics laptop
 
@@ -100,6 +130,7 @@ WebGL2 backend, so check the backend before you trust a screenshot.
 | Respawn | R | |
 | The controls menu | H, or Escape | Start |
 | Hide every panel | U | |
+| Mute the sound | M | |
 | Debug level | F3 | |
 
 **Press H, or click the CONTROLS button, for the full list.** The button stands
@@ -145,6 +176,7 @@ the world frame and the render frame.
 | `docs/aircraft-me262.md` | every aircraft number, with its confidence mark |
 | `docs/engine-jumo004.md` | the turbojet model and its limits |
 | `docs/controls.md` | input devices, axis map, and key bindings |
+| `docs/audio.md` | how every sound is built out of the flight state |
 | `docs/validation.md` | flight test targets and measured results |
 
 **Read `docs/CONVENTIONS.md` before you write any code or any prose here.** It

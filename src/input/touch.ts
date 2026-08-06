@@ -181,10 +181,11 @@ const THROTTLE_BUTTONS: readonly ButtonSpec[] = [
 /**
  * The pill buttons of the top bar.
  *
- * The CONTROLS button of src/ui/controls-menu.ts stands in the same row, to the
- * LEFT of these. It belongs to that module and not to this one, because it must
- * also stand on a desktop where this pad does not exist. TOP_BAR_INDENT below
- * holds the room this row leaves for it.
+ * The CONTROLS button of src/ui/controls-menu.ts and the SOUND button of
+ * src/ui/sound-button.ts stand in the same row, to the LEFT of these. They
+ * belong to those modules and not to this one, because both must also stand on
+ * a desktop where this pad does not exist. The indent of the bar in the style
+ * sheet below holds the room this row leaves for the pair.
  */
 const BAR_BUTTONS: readonly ButtonSpec[] = [
   { name: 'panels', label: 'PANELS', hold: false },
@@ -348,13 +349,18 @@ const CSS = `
 
 /* The top bar. It carries the panels switch and the collapse.
 
-   The 112 px indent is the width of the CONTROLS button of
-   src/ui/controls-menu.ts, which is 104 px, and the 8 px gap this row uses
-   between its own pills. That button stands first in the row, because it is
-   the one control that leads a new pilot to every other control. */
+   The 224 px indent is the width of TWO buttons that stand first in this row
+   and belong to other modules, with the 8 px gap this row uses between its own
+   pills after each one. They are the CONTROLS button of
+   src/ui/controls-menu.ts and the SOUND button of src/ui/sound-button.ts, and
+   both are 104 px wide.
+
+   Those two lead first because one of them leads a new pilot to every other
+   control, and the other is the first thing anybody looks for when a page
+   makes a noise. */
 .hfs-touch-bar {
   position: absolute;
-  left: calc(max(12px, env(safe-area-inset-left)) + 112px);
+  left: calc(max(12px, env(safe-area-inset-left)) + 224px);
   top: max(12px, env(safe-area-inset-top));
   display: flex;
   gap: 8px;

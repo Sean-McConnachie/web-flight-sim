@@ -95,6 +95,7 @@ export interface ControlInput {
   toggleHud: boolean;      // hides or shows every overlay panel
   respawn: boolean;        // puts the aircraft back on the runway threshold
   toggleFreeCamera: boolean;
+  toggleSound: boolean;    // mutes the sound, or brings it back
 }
 
 /** Which device the pilot last used. The prompts and the pad follow it. */
@@ -176,6 +177,7 @@ const BOOLEAN_ACTIONS = [
   'toggleHud',
   'respawn',
   'toggleFreeCamera',
+  'toggleSound',
 ] as const satisfies readonly BooleanAction[];
 
 /**
@@ -193,6 +195,7 @@ export const EDGE_ACTIONS: ReadonlySet<keyof ControlInput> = new Set<keyof Contr
   'toggleHud',
   'respawn',
   'toggleFreeCamera',
+  'toggleSound',
 ]);
 
 /**
@@ -441,6 +444,12 @@ export const DEFAULT_BINDINGS: readonly Binding[] = [
   { action: 'toggleHud', kind: 'button', keys: ['KeyU'], touch: 'panels' },
   { action: 'respawn', kind: 'button', keys: ['KeyR'], touch: 'respawn' },
   { action: 'toggleFreeCamera', kind: 'button', keys: ['F2'] },
+
+  // BEAD kz2. M is the key every media player in the world mutes on, so it is
+  // the first key a person tries. src/ui/sound-button.ts draws a button for it
+  // as well, because a phone has no M key and because a browser will not let
+  // the sound start until somebody presses something.
+  { action: 'toggleSound', kind: 'button', keys: ['KeyM'] },
 ];
 
 const AXIS_NAME_SET: ReadonlySet<string> = new Set<string>(AXIS_NAMES);
@@ -600,6 +609,7 @@ function createControlInput(): ControlInput {
     toggleHud: false,
     respawn: false,
     toggleFreeCamera: false,
+    toggleSound: false,
   };
 }
 
@@ -860,6 +870,7 @@ function createBooleanAccumulator(): Record<BooleanAction, boolean> {
     toggleHud: false,
     respawn: false,
     toggleFreeCamera: false,
+    toggleSound: false,
   };
 }
 

@@ -580,6 +580,21 @@ describe('the binding table', () => {
       expect(binding.keys?.includes('F1') ?? false).toBe(false);
     }
   });
+
+  it('the mute is on M and it fires one time for each press', () => {
+    // M is the key every media player mutes on, so it is the first key a
+    // person tries. The collision test above holds it against every other key.
+    const rig = createRig();
+    rig.keys.setKey('KeyM', true);
+    expect(rig.frame().toggleSound).toBe(true);
+    // A held key must not toggle the mute at 240 Hz. `toggleSound` is in
+    // EDGE_ACTIONS for that reason.
+    expect(rig.frame().toggleSound).toBe(false);
+    rig.keys.setKey('KeyM', false);
+    rig.frame();
+    rig.keys.setKey('KeyM', true);
+    expect(rig.frame().toggleSound).toBe(true);
+  });
 });
 
 describe('the on screen pad', () => {
